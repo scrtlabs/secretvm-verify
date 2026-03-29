@@ -12,7 +12,7 @@
     }
   },
   "bin": {
-    "check-vm": "dist/cli.js"
+    "secretvm-attestation": "dist/cli.js"
   },
   "scripts": {
     "build": "tsc",
