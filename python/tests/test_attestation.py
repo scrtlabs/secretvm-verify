@@ -1,5 +1,5 @@
 """
-Tests for secretai.attestation library.
+Tests for secretvm.verify library.
 
 These are integration tests that use the real attestation quote files
 and contact real verification services (Intel PCS, AMD KDS, NVIDIA NRAS).
@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from secretai.attestation import (
+from secretvm.verify import (
     AttestationResult,
     check_amd_cpu_attestation,
     check_cpu_attestation,
@@ -257,7 +257,7 @@ class TestNvidiaAttestation:
 # Secret VM (end-to-end)
 # ---------------------------------------------------------------------------
 
-_M = "secretai.attestation"
+_M = "secretvm.verify"
 
 # Helpers to build mock HTTP responses
 def _mock_response(text, status_code=200, content_type="text/plain"):
@@ -310,7 +310,7 @@ class TestSecretVm:
         assert result.valid is False
 
     def test_url_parsing(self):
-        from secretai.attestation import _parse_vm_url
+        from secretvm.verify import _parse_vm_url
 
         assert _parse_vm_url("myhost") == ("myhost", 29343)
         assert _parse_vm_url("myhost:1234") == ("myhost", 1234)

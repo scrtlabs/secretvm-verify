@@ -36,7 +36,7 @@ The simplest way to verify a VM — handles CPU detection, GPU detection, and al
 **Python:**
 
 ```python
-from secretai.attestation import check_secret_vm
+from secretvm.verify import check_secret_vm
 
 result = check_secret_vm("my-vm.example.com")
 
@@ -68,7 +68,7 @@ If you have a raw CPU attestation quote and want to verify it directly:
 **Python:**
 
 ```python
-from secretai.attestation import check_cpu_attestation
+from secretvm.verify import check_cpu_attestation
 
 # Automatically detects whether the quote is Intel TDX (hex) or AMD SEV-SNP (base64)
 result = check_cpu_attestation(open("cpu_quote.txt").read())
@@ -252,7 +252,7 @@ The library contacts these services during verification:
 secretvm-verify/
   python/                     # PyPI package
     pyproject.toml
-    src/secretai/attestation/
+    src/secretvm/verify/
       __init__.py             # All library code
     tests/
       test_attestation.py     # 34 tests (integration + mocked)

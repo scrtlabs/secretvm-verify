@@ -4,7 +4,7 @@
 import json
 import sys
 from dataclasses import asdict
-from secretai.attestation import check_secret_vm
+from secretvm.verify import check_secret_vm
 
 
 def main():
