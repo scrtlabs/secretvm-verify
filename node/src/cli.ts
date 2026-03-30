@@ -27,13 +27,14 @@ function getFlagValue(name: string): string | undefined {
 }
 
 function getPositional(): string | undefined {
-  return args.find((a) => !a.startsWith("--"));
+  return args.find((a) => !a.startsWith("--") && a !== "-v");
 }
 
 const raw = getFlag("--raw");
+const verbose = getFlag("--verbose") || getFlag("-v");
 const product = getFlagValue("--product") ?? "";
 
-const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--raw]
+const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--raw] [--verbose|-v]
 
 Commands:
   --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
@@ -48,6 +49,7 @@ Commands:
 Options:
   --product NAME       AMD product name (Genoa, Milan, Turin)
   --raw                Output raw JSON result
+  --verbose, -v        Print all attestation report fields
 
 Examples:
   secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
@@ -254,6 +256,25 @@ if (gpu.gpus) {
     console.log(`  Model: ${info.model}`);
     console.log(`  Driver: ${info.driver_version}`);
     console.log(`  Secure boot: ${info.secure_boot}`);
+  }
+}
+
+// Verbose: print all report fields
+if (verbose) {
+  console.log("\nAll attestation report fields:");
+  for (const [key, value] of Object.entries(report)) {
+    if (typeof value === "object" && value !== null) {
+      console.log(`  ${key}:`);
+      for (const [subKey, subValue] of Object.entries(value)) {
+        if (typeof subValue === "object" && subValue !== null) {
+          console.log(`    ${subKey}: ${JSON.stringify(subValue)}`);
+        } else {
+          console.log(`    ${subKey}: ${subValue}`);
+        }
+      }
+    } else {
+      console.log(`  ${key}: ${value}`);
+    }
   }
 }
 
