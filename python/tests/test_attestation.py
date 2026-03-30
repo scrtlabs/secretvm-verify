@@ -21,6 +21,8 @@ from secretvm.verify import (
     check_tdx_cpu_attestation,
     resolve_secretvm_version,
     verify_tdx_workload,
+    verify_sev_workload,
+    verify_workload,
     format_workload_result,
 )
 
@@ -520,7 +522,7 @@ class TestVerifyTdxWorkload:
         assert r.status == "not_authentic"
 
     def test_format_not_authentic(self):
-        from secretai.attestation import WorkloadResult
+        from secretvm.verify import WorkloadResult
         r = WorkloadResult(status="not_authentic")
         out = format_workload_result(r)
         assert "authentic SecretVM" in out
@@ -563,3 +565,46 @@ class TestCheckTdxCpuAttestationDockerQuote:
         raw[636] ^= 0xFF
         crypto_result = check_tdx_cpu_attestation(bytes(raw).hex())
         assert crypto_result.valid is False
+
+
+# ---------------------------------------------------------------------------
+# Generic verifyWorkload + verifySevWorkload (TODO stub)
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyWorkload:
+    """verify_workload auto-dispatches to the right implementation."""
+
+    def test_delegates_to_tdx_for_tdx_quote(self, docker_quote, docker_compose):
+        r = verify_workload(docker_quote, docker_compose)
+        assert r.status == "authentic_match"
+
+    def test_tdx_mismatch_via_generic(self, docker_quote, docker_compose):
+        r = verify_workload(docker_quote, docker_compose + "\n# tampered")
+        assert r.status == "authentic_mismatch"
+
+    def test_tdx_not_authentic_corrupted_mrtd(self, docker_quote, docker_compose):
+        raw = bytearray(bytes.fromhex(docker_quote.strip()))
+        raw[184] ^= 0xFF
+        r = verify_workload(bytes(raw).hex(), docker_compose)
+        assert r.status == "not_authentic"
+
+    def test_returns_not_authentic_for_unknown_input(self, docker_compose):
+        r = verify_workload("not-a-valid-quote", docker_compose)
+        assert r.status == "not_authentic"
+
+    def test_sev_stub_returns_not_authentic(self, docker_compose):
+        # AMD SEV-SNP workload verification is TODO – always not_authentic for now.
+        amd_quote = (
+            FIXTURES_DIR / "amd_cpu_quote.txt"
+        ).read_text()
+        r = verify_workload(amd_quote, docker_compose)
+        assert r.status == "not_authentic"
+
+
+class TestVerifySevWorkload:
+    """verify_sev_workload is a TODO stub – always returns not_authentic."""
+
+    def test_always_not_authentic(self, docker_compose):
+        r = verify_sev_workload("any-quote-data", docker_compose)
+        assert r.status == "not_authentic"

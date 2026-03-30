@@ -7,7 +7,7 @@ import {
   checkAmdCpuAttestation,
   checkNvidiaGpuAttestation,
   resolveSecretVmVersion,
-  verifyTdxWorkload,
+  verifyWorkload,
   formatWorkloadResult,
 } from "./index.js";
 import type { AttestationResult } from "./types.js";
@@ -133,7 +133,7 @@ if (getFlag("--secretvm")) {
   const quoteHex = readFileSync(quoteFile, "utf8");
   const quoteResult = await checkTdxCpuAttestation(quoteHex);
   if (raw) {
-    const workloadResult = verifyTdxWorkload(quoteHex, readFileSync(composeFile, "utf8"));
+    const workloadResult = verifyWorkload(quoteHex, readFileSync(composeFile, "utf8"));
     console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
     process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
   }
@@ -141,7 +141,7 @@ if (getFlag("--secretvm")) {
     console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
     process.exit(1);
   }
-  const workloadResult = verifyTdxWorkload(
+  const workloadResult = verifyWorkload(
     quoteHex,
     readFileSync(composeFile, "utf8"),
   );

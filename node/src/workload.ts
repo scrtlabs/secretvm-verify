@@ -1,4 +1,5 @@
 import { parseTdxQuoteFields } from "./tdx.js";
+import { detectCpuQuoteType } from "./cpu.js";
 import {
     findMatchingArtifacts,
     pickNewestVersion,
@@ -137,4 +138,45 @@ export function formatWorkloadResult(r: WorkloadResult): string {
         vmLine +
         "\n🚫 Attestation does not match the specified docker-compose.yaml"
     );
+}
+
+// ---------------------------------------------------------------------------
+// SEV-SNP workload verification (TODO)
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify an AMD SEV-SNP workload against a docker-compose.yaml.
+ *
+ * TODO: SEV-SNP workload verification is not yet implemented.
+ * Always returns `not_authentic` until a SEV artifact registry and RTMR-
+ * equivalent measurement replay logic are added.
+ */
+export function verifySevWorkload(
+    _quoteBase64: string,
+    _dockerComposeYaml: string,
+): WorkloadResult {
+    return { status: "not_authentic" };
+}
+
+// ---------------------------------------------------------------------------
+// Generic workload verifier (auto-detects TDX vs SEV-SNP)
+// ---------------------------------------------------------------------------
+
+/**
+ * Verify that a CPU quote was produced by a known SecretVM running the given
+ * docker-compose YAML.  Automatically detects whether the quote is an Intel
+ * TDX (hex) or AMD SEV-SNP (base64) quote and delegates to the appropriate
+ * lower-level function.
+ *
+ * @param quoteData       Hex-encoded TDX quote **or** base64-encoded SEV-SNP report.
+ * @param dockerComposeYaml  Contents of the docker-compose.yaml file.
+ */
+export function verifyWorkload(
+    quoteData: string,
+    dockerComposeYaml: string,
+): WorkloadResult {
+    const type = detectCpuQuoteType(quoteData);
+    if (type === "TDX") return verifyTdxWorkload(quoteData, dockerComposeYaml);
+    if (type === "SEV-SNP") return verifySevWorkload(quoteData, dockerComposeYaml);
+    return { status: "not_authentic" };
 }

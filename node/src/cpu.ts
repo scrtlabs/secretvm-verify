@@ -5,7 +5,7 @@ import { checkAmdCpuAttestation } from "./amd.js";
 /**
  * Detect whether the quote is Intel TDX (hex) or AMD SEV-SNP (base64).
  */
-function detectCpuQuoteType(data: string): "TDX" | "SEV-SNP" | "unknown" {
+export function detectCpuQuoteType(data: string): "TDX" | "SEV-SNP" | "unknown" {
   const text = data.trim();
 
   // Try hex — TDX quotes: version=4, tee_type=0x81

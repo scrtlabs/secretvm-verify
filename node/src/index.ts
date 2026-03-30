@@ -3,11 +3,13 @@ export { checkTdxCpuAttestation, parseTdxQuoteFields } from "./tdx.js";
 export type { TdxQuoteFields } from "./tdx.js";
 export { checkAmdCpuAttestation } from "./amd.js";
 export { checkNvidiaGpuAttestation } from "./nvidia.js";
-export { checkCpuAttestation } from "./cpu.js";
+export { checkCpuAttestation, detectCpuQuoteType } from "./cpu.js";
 export { checkSecretVm } from "./vm.js";
 export {
     resolveSecretVmVersion,
     verifyTdxWorkload,
+    verifySevWorkload,
+    verifyWorkload,
     formatWorkloadResult,
 } from "./workload.js";
 export type { WorkloadResult, WorkloadStatus } from "./workload.js";

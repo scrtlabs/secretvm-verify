@@ -7,6 +7,8 @@ import { dirname, resolve } from "node:path";
 import {
     resolveSecretVmVersion,
     verifyTdxWorkload,
+    verifySevWorkload,
+    verifyWorkload,
 } from "./workload.js";
 import { checkTdxCpuAttestation } from "./tdx.js";
 
@@ -112,5 +114,56 @@ describe("checkTdxCpuAttestation – workload quote", () => {
         const result = await checkTdxCpuAttestation("aa".repeat(100));
         assert.equal(result.valid, false);
         assert.equal(result.checks["quote_parsed"], false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// verifySevWorkload (TODO stub)
+// ---------------------------------------------------------------------------
+
+describe("verifySevWorkload", () => {
+    it("always returns not_authentic (TODO stub)", () => {
+        const r = verifySevWorkload("any-base64-data", dockerCompose);
+        assert.equal(r.status, "not_authentic");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// verifyWorkload (generic auto-detect)
+// ---------------------------------------------------------------------------
+
+const amdQuote = readFileSync(`${TEST_DATA}/amd_cpu_quote.txt`, "utf8");
+
+describe("verifyWorkload", () => {
+    it("delegates to verifyTdxWorkload for a TDX quote (authentic_match)", () => {
+        const r = verifyWorkload(dockerQuote, dockerCompose);
+        assert.equal(r.status, "authentic_match");
+        assert.equal(r.template_name, "small");
+        assert.ok(r.artifacts_ver!.startsWith("v0.0."));
+    });
+
+    it("delegates to verifyTdxWorkload and returns authentic_mismatch on compose change", () => {
+        const r = verifyWorkload(dockerQuote, dockerCompose + "\n# tampered");
+        assert.equal(r.status, "authentic_mismatch");
+    });
+
+    it("returns not_authentic for TDX quote with unknown MRTD", () => {
+        const raw = Buffer.from(dockerQuote.trim(), "hex");
+        const corrupted = Buffer.from(raw);
+        corrupted[184] ^= 0xff;
+        const r = verifyWorkload(corrupted.toString("hex"), dockerCompose);
+        assert.equal(r.status, "not_authentic");
+    });
+
+    it("delegates to verifySevWorkload for an AMD SEV-SNP quote (TODO → not_authentic)", () => {
+        // SEV-SNP workload check is not yet implemented; generic dispatcher
+        // must recognise and call verifySevWorkload (which returns not_authentic).
+        const r = verifyWorkload(amdQuote, dockerCompose);
+        assert.equal(r.status, "not_authentic");
+    });
+
+    it("returns not_authentic for completely garbled input", () => {
+        const r = verifyWorkload("not-a-quote-at-all!!!", dockerCompose);
+        assert.equal(r.status, "not_authentic");
     });
 });

@@ -101,9 +101,10 @@ Verify that a TDX quote was produced by a known SecretVM *and* that it was runni
 **Python:**
 
 ```python
-from secretvm.verify import verify_tdx_workload, format_workload_result
+from secretvm.verify import verify_workload, format_workload_result
 
-result = verify_tdx_workload(
+# Auto-detects TDX vs SEV-SNP:
+result = verify_workload(
     open("cpu_quote.txt").read(),
     open("docker-compose.yaml").read(),
 )
@@ -115,13 +116,16 @@ print(result.env)           # e.g. "prod"    (None when not_authentic)
 print(format_workload_result(result))  # human-readable summary
 ```
 
+*If you know the quote type, you can call `verify_tdx_workload` directly (same signature).*
+
 **Node.js / TypeScript:**
 
 ```typescript
-import { verifyTdxWorkload, formatWorkloadResult } from 'secretvm-verify';
+import { verifyWorkload, formatWorkloadResult } from 'secretvm-verify';
 import { readFileSync } from 'fs';
 
-const result = verifyTdxWorkload(
+// Auto-detects TDX vs SEV-SNP:
+const result = verifyWorkload(
   readFileSync('cpu_quote.txt', 'utf8'),
   readFileSync('docker-compose.yaml', 'utf8'),
 );
@@ -132,6 +136,8 @@ console.log(result.artifacts_ver); // e.g. "v0.0.25" (undefined when not_authent
 console.log(result.env);           // e.g. "prod"    (undefined when not_authentic)
 console.log(formatWorkloadResult(result)); // human-readable summary
 ```
+
+*If you know the quote type, you can call `verifyTdxWorkload` directly (same signature).*
 
 **Status values:**
 
@@ -258,7 +264,29 @@ Verifies that a TDX quote was produced by a known SecretVM running a specific `d
 - `data` — Hex-encoded TDX quote
 - `docker_compose_yaml` / `dockerComposeYaml` — Contents of the `docker-compose.yaml` file
 
-**Returns:** `WorkloadResult` (Python dataclass / TypeScript interface)
+**Returns:** `WorkloadResult`
+
+---
+
+#### `verify_sev_workload(data, docker_compose_yaml)` / `verifySevWorkload(data, dockerComposeYaml)`
+
+**TODO — not yet implemented.** Always returns `not_authentic`. SEV-SNP workload verification will be added in a future release once a SEV artifact registry and measurement replay logic are available.
+
+---
+
+#### `verify_workload(data, docker_compose_yaml)` / `verifyWorkload(data, dockerComposeYaml)`
+
+Generic workload verifier that auto-detects the quote type and delegates to the appropriate lower-level function:
+
+- **TDX** (hex) → `verify_tdx_workload` / `verifyTdxWorkload`
+- **SEV-SNP** (base64) → `verify_sev_workload` / `verifySevWorkload` *(TODO — currently returns `not_authentic`)*
+- **Unknown** → returns `not_authentic`
+
+**Parameters:**
+- `data` — Hex-encoded TDX quote **or** base64-encoded SEV-SNP report
+- `docker_compose_yaml` / `dockerComposeYaml` — Contents of the `docker-compose.yaml` file
+
+**Returns:** `WorkloadResult`
 
 ---
 
@@ -286,7 +314,7 @@ Formats a `WorkloadResult` as a short, human-readable string with status emoji.
 
 #### `WorkloadResult`
 
-Python dataclass / TypeScript interface returned by `verify_tdx_workload` / `verifyTdxWorkload`:
+Python dataclass / TypeScript interface returned by workload functions:
 
 | Field | Type | Description |
 |-------|------|-------------|

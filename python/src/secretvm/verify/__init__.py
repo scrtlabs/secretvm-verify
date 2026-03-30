@@ -1241,3 +1241,50 @@ def format_workload_result(r: WorkloadResult) -> str:
         return vm_line + "\n\u2705 Confirmed that the VM is running the specified docker-compose.yaml"
 
     return vm_line + "\n\U0001f6ab Attestation does not match the specified docker-compose.yaml"
+
+
+# ---------------------------------------------------------------------------
+# SEV-SNP workload verification (TODO)
+# ---------------------------------------------------------------------------
+
+
+def verify_sev_workload(data: str, docker_compose_yaml: str) -> WorkloadResult:
+    """Verify an AMD SEV-SNP workload against a docker-compose.yaml.
+
+    TODO: SEV-SNP workload verification is not yet implemented.  Always returns
+    ``not_authentic`` until a SEV artifact registry and measurement replay logic
+    (equivalent to TDX RTMR3 replay) are added.
+    """
+    return WorkloadResult(status="not_authentic")
+
+
+# ---------------------------------------------------------------------------
+# Generic workload verifier (auto-detects TDX vs SEV-SNP)
+# ---------------------------------------------------------------------------
+
+
+def verify_workload(data: str, docker_compose_yaml: str) -> WorkloadResult:
+    """Verify that a CPU quote was produced by a known SecretVM running the
+    given docker-compose YAML.
+
+    Automatically detects whether *data* is an Intel TDX (hex) or AMD SEV-SNP
+    (base64) quote and delegates to the appropriate lower-level function:
+
+    - TDX  → :func:`verify_tdx_workload`
+    - SEV-SNP → :func:`verify_sev_workload` (TODO – currently returns not_authentic)
+    - unknown → returns ``not_authentic``
+
+    Args:
+        data: Hex-encoded TDX quote **or** base64-encoded SEV-SNP report.
+        docker_compose_yaml: Contents of the docker-compose.yaml file.
+
+    Returns:
+        :class:`WorkloadResult` with status ``"authentic_match"``,
+        ``"authentic_mismatch"``, or ``"not_authentic"``.
+    """
+    quote_type = _detect_cpu_quote_type(data)
+    if quote_type == "TDX":
+        return verify_tdx_workload(data, docker_compose_yaml)
+    if quote_type == "SEV-SNP":
+        return verify_sev_workload(data, docker_compose_yaml)
+    return WorkloadResult(status="not_authentic")
