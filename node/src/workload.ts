@@ -3,9 +3,13 @@ import { detectCpuQuoteType } from "./cpu.js";
 import {
     findMatchingArtifacts,
     pickNewestVersion,
+    loadSevRegistry,
     type TdxArtifactEntry,
+    type SevArtifactEntry,
 } from "./artifacts.js";
 import { calculateRtmr3 } from "./rtmr.js";
+import { calcSevMeasurement, parseSevFamilyId } from "./sevGctx.js";
+import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -43,6 +47,41 @@ export function resolveSecretVmVersion(
     return {
         template_name: newest.template_name,
         artifacts_ver: newest.artifacts_ver,
+    };
+}
+
+/**
+ * Given an AMD SEV-SNP attestation report (base64), look up the matching
+ * SecretVM registry entry.  Returns null when not found.
+ */
+export function resolveAmdSevVersion(
+    quoteBase64: string,
+): { template_name: string; vm_type: string; artifacts_ver: string } | null {
+    let raw: Buffer;
+    try {
+        raw = Buffer.from(quoteBase64.trim(), "base64");
+    } catch {
+        return null;
+    }
+    if (raw.length < 0x030) return null;
+    const family = parseSevFamilyId(raw.subarray(0x010, 0x020));
+    if (!family) return null;
+    const imageId = raw.subarray(0x020, 0x030).toString("utf8").replace(/[\x00#]+$/, "");
+    if (!imageId) return null;
+    let registry: SevArtifactEntry[];
+    try {
+        registry = loadSevRegistry();
+    } catch {
+        return null;
+    }
+    const entry = registry.find(
+        (e) => e.vm_type === family.vmType && e.artifacts_ver === imageId,
+    );
+    if (!entry) return null;
+    return {
+        template_name: family.templateName,
+        vm_type: family.vmType,
+        artifacts_ver: imageId,
     };
 }
 
@@ -124,7 +163,7 @@ export function formatWorkloadResult(r: WorkloadResult): string {
         return "🚫 Attestation doesn't belong to an authentic SecretVM";
     }
 
-    const vmLine = `✅ Confirmed an authentic SecretVM (TDX), vm_type ${r.template_name}, artifacts ${r.artifacts_ver}, environment ${r.env}`;
+    const vmLine = `✅ Confirmed an authentic SecretVM, vm_type ${r.template_name}, artifacts ${r.artifacts_ver}, environment ${r.env}`;
 
     if (r.status === "authentic_match") {
         return (
@@ -141,20 +180,106 @@ export function formatWorkloadResult(r: WorkloadResult): string {
 }
 
 // ---------------------------------------------------------------------------
-// SEV-SNP workload verification (TODO)
+// SEV-SNP workload verification
 // ---------------------------------------------------------------------------
 
 /**
  * Verify an AMD SEV-SNP workload against a docker-compose.yaml.
  *
- * TODO: SEV-SNP workload verification is not yet implemented.
- * Always returns `not_authentic` until a SEV artifact registry and RTMR-
- * equivalent measurement replay logic are added.
+ * Recomputes the SEV-SNP GCTX launch digest from the registry entry matching
+ * the quote's `family_id` / `image_id` and the provided compose content, then
+ * compares it against the measurement in the report.
+ *
+ * @param quoteBase64      Base64-encoded AMD SEV-SNP attestation report.
+ * @param dockerComposeYaml  Contents of the docker-compose.yaml file.
  */
 export function verifySevWorkload(
-    _quoteBase64: string,
-    _dockerComposeYaml: string,
+    quoteBase64: string,
+    dockerComposeYaml: string,
 ): WorkloadResult {
+    let raw: Buffer;
+    try {
+        raw = Buffer.from(quoteBase64.trim(), "base64");
+    } catch {
+        return { status: "not_authentic" };
+    }
+
+    if (raw.length < 0x090 + 48) return { status: "not_authentic" };
+
+    let quoteMeasurement: string;
+    let family: ReturnType<typeof parseSevFamilyId>;
+    let imageId: string;
+    try {
+        quoteMeasurement = raw.subarray(0x090, 0x090 + 48).toString("hex");
+        family = parseSevFamilyId(raw.subarray(0x010, 0x020));
+        if (!family) return { status: "not_authentic" };
+        imageId = raw.subarray(0x020, 0x030).toString("utf8").replace(/[\x00#]+$/, "");
+    } catch {
+        return { status: "not_authentic" };
+    }
+
+    let registry: SevArtifactEntry[];
+    try {
+        registry = loadSevRegistry();
+    } catch {
+        return { status: "not_authentic" };
+    }
+
+    const { vmType, templateName, vcpus } = family;
+
+    // raw SHA256 — matches jeeves compute_file_hash() (no YAML normalization)
+    const composeHash = createHash("sha256").update(dockerComposeYaml, "utf8").digest("hex");
+
+    const candidates = registry.filter((e) => e.vm_type === vmType);
+    const versionEntries = imageId ? candidates.filter((e) => e.artifacts_ver === imageId) : [];
+
+    function tryEntry(entry: SevArtifactEntry): boolean {
+        const cmdline = `console=ttyS0 loglevel=7 docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+        try {
+            return calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement;
+        } catch {
+            return false;
+        }
+    }
+
+    // Try version-specific entries first
+    for (const entry of versionEntries) {
+        if (tryEntry(entry)) {
+            return {
+                status: "authentic_match",
+                template_name: templateName,
+                vm_type: templateName,
+                artifacts_ver: entry.artifacts_ver,
+                env: vmType,
+            };
+        }
+    }
+
+    // Fallback: other entries for this vm_type
+    for (const entry of candidates) {
+        if (imageId && entry.artifacts_ver === imageId) continue; // already tried above
+        if (tryEntry(entry)) {
+            return {
+                status: "authentic_match",
+                template_name: templateName,
+                vm_type: templateName,
+                artifacts_ver: entry.artifacts_ver,
+                env: vmType,
+            };
+        }
+    }
+
+    // No compose match. If the version is in the registry the VM is authentic
+    // but the provided compose doesn't match the measurement.
+    if (versionEntries.length > 0) {
+        return {
+            status: "authentic_mismatch",
+            template_name: templateName,
+            vm_type: templateName,
+            artifacts_ver: imageId,
+            env: vmType,
+        };
+    }
     return { status: "not_authentic" };
 }
 

@@ -270,7 +270,7 @@ Verifies that a TDX quote was produced by a known SecretVM running a specific `d
 
 #### `verify_sev_workload(data, docker_compose_yaml)` / `verifySevWorkload(data, dockerComposeYaml)`
 
-**TODO — not yet implemented.** Always returns `not_authentic`. SEV-SNP workload verification will be added in a future release once a SEV artifact registry and measurement replay logic are available.
+Verifies that an AMD SEV-SNP report was produced by a known SecretVM running a specific `docker-compose.yaml`. Recomputes the SEV-SNP GCTX launch digest from the registry entry matching the report's `family_id`/`image_id` and the provided compose content, then compares it against the measurement in the report.
 
 ---
 
@@ -279,7 +279,7 @@ Verifies that a TDX quote was produced by a known SecretVM running a specific `d
 Generic workload verifier that auto-detects the quote type and delegates to the appropriate lower-level function:
 
 - **TDX** (hex) → `verify_tdx_workload` / `verifyTdxWorkload`
-- **SEV-SNP** (base64) → `verify_sev_workload` / `verifySevWorkload` *(TODO — currently returns `not_authentic`)*
+- **SEV-SNP** (base64) → `verify_sev_workload` / `verifySevWorkload`
 - **Unknown** → returns `not_authentic`
 
 **Parameters:**

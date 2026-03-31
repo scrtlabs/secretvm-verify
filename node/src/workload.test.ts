@@ -118,13 +118,49 @@ describe("checkTdxCpuAttestation – workload quote", () => {
 });
 
 // ---------------------------------------------------------------------------
-// verifySevWorkload (TODO stub)
+// verifySevWorkload
 // ---------------------------------------------------------------------------
 
 describe("verifySevWorkload", () => {
-    it("always returns not_authentic (TODO stub)", () => {
-        const r = verifySevWorkload("any-base64-data", dockerCompose);
+    it("returns authentic_match for v0.0.25 prod small quote + correct compose", () => {
+        const r = verifySevWorkload(amdDockerQuote, amdDockerCompose);
+        assert.equal(r.status, "authentic_match");
+        assert.equal(r.template_name, "small");
+        assert.equal(r.artifacts_ver, "v0.0.25");
+        assert.equal(r.env, "prod");
+    });
+
+    it("returns authentic_mismatch when compose is tampered", () => {
+        const r = verifySevWorkload(amdDockerQuote, amdDockerCompose + "\n# tampered");
+        assert.equal(r.status, "authentic_mismatch");
+        assert.equal(r.template_name, "small");
+        assert.equal(r.artifacts_ver, "v0.0.25");
+        assert.equal(r.env, "prod");
+    });
+
+    it("returns authentic_mismatch for a corrupted measurement field", () => {
+        // Version (image_id) is still readable — VM is recognised as authentic
+        // but the measurement can’t match any GCTX computation → authentic_mismatch.
+        const raw = Buffer.from(amdDockerQuote.trim(), "base64");
+        const corrupted = Buffer.from(raw);
+        corrupted[0x090] ^= 0xff;
+        const r = verifySevWorkload(corrupted.toString("base64"), amdDockerCompose);
+        assert.equal(r.status, "authentic_mismatch");
+        assert.equal(r.artifacts_ver, "v0.0.25");
+    });
+
+    it("returns not_authentic for garbled input", () => {
+        const r = verifySevWorkload("not-valid-base64!!!", dockerCompose);
         assert.equal(r.status, "not_authentic");
+    });
+
+    it("returns authentic_mismatch when quote version is in registry but compose does not match", () => {
+        // amd_cpu_quote.txt (v0.0.25 prod) is in the registry;
+        // dockerCompose (TDX compose) doesn’t match its measurement.
+        const r = verifySevWorkload(amdQuote, dockerCompose);
+        assert.equal(r.status, "authentic_mismatch");
+        assert.equal(r.template_name, "small");
+        assert.equal(r.artifacts_ver, "v0.0.25");
     });
 });
 
@@ -133,6 +169,8 @@ describe("verifySevWorkload", () => {
 // ---------------------------------------------------------------------------
 
 const amdQuote = readFileSync(`${TEST_DATA}/amd_cpu_quote.txt`, "utf8");
+const amdDockerQuote = readFileSync(`${TEST_DATA}/amd_cpu_docker_check_quote.txt`, "utf8");
+const amdDockerCompose = readFileSync(`${TEST_DATA}/amd_cpu_docker_check_compose.yaml`, "utf8");
 
 describe("verifyWorkload", () => {
     it("delegates to verifyTdxWorkload for a TDX quote (authentic_match)", () => {
@@ -155,11 +193,21 @@ describe("verifyWorkload", () => {
         assert.equal(r.status, "not_authentic");
     });
 
-    it("delegates to verifySevWorkload for an AMD SEV-SNP quote (TODO → not_authentic)", () => {
-        // SEV-SNP workload check is not yet implemented; generic dispatcher
-        // must recognise and call verifySevWorkload (which returns not_authentic).
+    it("delegates to verifySevWorkload for AMD SEV-SNP docker check quote (authentic_match)", () => {
+        const r = verifyWorkload(amdDockerQuote, amdDockerCompose);
+        assert.equal(r.status, "authentic_match");
+        assert.equal(r.template_name, "small");
+        assert.equal(r.artifacts_ver, "v0.0.25");
+        assert.equal(r.env, "prod");
+    });
+
+    it("returns authentic_mismatch for SEV-SNP quote when version is in registry but compose does not match", () => {
+        // amd_cpu_quote.txt (v0.0.25 prod) is in the registry;
+        // dockerCompose (TDX compose) doesn’t match its measurement.
         const r = verifyWorkload(amdQuote, dockerCompose);
-        assert.equal(r.status, "not_authentic");
+        assert.equal(r.status, "authentic_mismatch");
+        assert.equal(r.template_name, "small");
+        assert.equal(r.artifacts_ver, "v0.0.25");
     });
 
     it("returns not_authentic for completely garbled input", () => {

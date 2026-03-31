@@ -120,3 +120,35 @@ export function resolveVersion(
         artifacts_ver: newest.artifacts_ver,
     };
 }
+
+// ---------------------------------------------------------------------------
+// SEV-SNP artifact registry
+// ---------------------------------------------------------------------------
+
+export interface SevArtifactEntry {
+    vm_type: string;
+    artifacts_ver: string;
+    kernel_hash: string;
+    initrd_hash: string;
+    vcpu_type: string;
+    rootfs_hash: string;
+    ovmf_hash: string;
+    sev_hashes_table_gpa: number;
+    sev_es_reset_eip: number;
+    ovmf_sections: Array<{ gpa: number; size: number; section_type: number }>;
+}
+
+function sevJsonPath(): string {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = dirname(__filename);
+    return join(__dirname, "..", "..", "artifacts_registry", "sev.json");
+}
+
+let _sevRegistry: SevArtifactEntry[] | null = null;
+
+export function loadSevRegistry(): SevArtifactEntry[] {
+    if (_sevRegistry) return _sevRegistry;
+    const content = readFileSync(sevJsonPath(), "utf8");
+    _sevRegistry = JSON.parse(content) as SevArtifactEntry[];
+    return _sevRegistry;
+}

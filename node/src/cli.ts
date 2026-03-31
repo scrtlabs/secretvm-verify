@@ -6,7 +6,9 @@ import {
   checkTdxCpuAttestation,
   checkAmdCpuAttestation,
   checkNvidiaGpuAttestation,
+  detectCpuQuoteType,
   resolveSecretVmVersion,
+  resolveAmdSevVersion,
   verifyWorkload,
   formatWorkloadResult,
 } from "./index.js";
@@ -39,9 +41,9 @@ Commands:
   --tdx <file>                      Verify an Intel TDX quote
   --sev <file>                      Verify an AMD SEV-SNP report
   --gpu <file>                      Verify an NVIDIA GPU attestation
-  --resolve-version <file>          Resolve SecretVM version from TDX quote
+  --resolve-version <file>          Resolve SecretVM version from TDX or AMD SEV-SNP quote
   --verify-workload <file> --compose <file>
-                                    Verify TDX workload against a docker-compose.yaml
+                                    Verify TDX or AMD SEV-SNP workload against a docker-compose.yaml
 
 Options:
   --product NAME       AMD product name (Genoa, Milan, Turin)
@@ -105,24 +107,49 @@ if (getFlag("--secretvm")) {
     console.log(USAGE);
     process.exit(1);
   }
-  const quoteHex = readFileSync(file, "utf8");
-  const quoteResult = await checkTdxCpuAttestation(quoteHex);
-  const version = resolveSecretVmVersion(quoteHex);
-  if (raw) {
-    console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+  const quoteData = readFileSync(file, "utf8");
+  const quoteType = detectCpuQuoteType(quoteData);
+  if (quoteType === "SEV-SNP") {
+    // Step 1: cryptographic quote verification
+    const quoteResult = await checkAmdCpuAttestation(quoteData, product);
+    // Step 2: registry lookup
+    const version = resolveAmdSevVersion(quoteData);
+    if (raw) {
+      console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+      process.exit(quoteResult.valid && !!version ? 0 : 1);
+    }
+    if (!quoteResult.valid) {
+      console.log("🚫 Quote cryptographic verification failed");
+      process.exit(1);
+    }
+    if (version) {
+      console.log(`✅ Authentic SecretVM confirmed`);
+      console.log(`Template: ${version.template_name}`);
+      console.log(`VM type:  ${version.vm_type}`);
+      console.log(`Version:  ${version.artifacts_ver}`);
+    } else {
+      console.log("🚫 SecretVM artifacts not found in registry (unknown version)");
+    }
     process.exit(quoteResult.valid && !!version ? 0 : 1);
-  }
-  if (!quoteResult.valid) {
-    console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
-    process.exit(1);
-  }
-  if (version) {
-    console.log(`Template: ${version.template_name}`);
-    console.log(`Version:  ${version.artifacts_ver}`);
   } else {
-    console.log("No matching SecretVM version found in registry.");
+    const quoteResult = await checkTdxCpuAttestation(quoteData);
+    const version = resolveSecretVmVersion(quoteData);
+    if (raw) {
+      console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+      process.exit(quoteResult.valid && !!version ? 0 : 1);
+    }
+    if (!quoteResult.valid) {
+      console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
+      process.exit(1);
+    }
+    if (version) {
+      console.log(`Template: ${version.template_name}`);
+      console.log(`Version:  ${version.artifacts_ver}`);
+    } else {
+      console.log("No matching SecretVM version found in registry.");
+    }
+    process.exit(!!version ? 0 : 1);
   }
-  process.exit(!!version ? 0 : 1);
 } else if (getFlag("--verify-workload")) {
   const quoteFile = getFlagValue("--verify-workload") ?? getPositional();
   const composeFile = getFlagValue("--compose");
@@ -130,23 +157,51 @@ if (getFlag("--secretvm")) {
     console.log(USAGE);
     process.exit(1);
   }
-  const quoteHex = readFileSync(quoteFile, "utf8");
-  const quoteResult = await checkTdxCpuAttestation(quoteHex);
-  if (raw) {
-    const workloadResult = verifyWorkload(quoteHex, readFileSync(composeFile, "utf8"));
-    console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
-    process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+  const quoteData = readFileSync(quoteFile, "utf8");
+  const composeData = readFileSync(composeFile, "utf8");
+  const quoteType = detectCpuQuoteType(quoteData);
+  if (quoteType === "SEV-SNP") {
+    // Step 1: cryptographic quote verification
+    const quoteResult = await checkAmdCpuAttestation(quoteData, product);
+    if (raw) {
+      const workloadResult = verifyWorkload(quoteData, composeData);
+      console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
+      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+    }
+    if (!quoteResult.valid) {
+      console.log("🚫 Quote cryptographic verification failed");
+      process.exit(1);
+    }
+    // Step 2: registry lookup — confirms this is a known SecretVM
+    const version = resolveAmdSevVersion(quoteData);
+    if (!version) {
+      console.log("🚫 SecretVM artifacts not found in registry (unknown version)");
+      process.exit(1);
+    }
+    console.log(`✅ Authentic SecretVM confirmed: ${version.vm_type}/${version.template_name} ${version.artifacts_ver}`);
+    // Step 3: workload (compose hash) verification
+    const workloadResult = verifyWorkload(quoteData, composeData);
+    if (workloadResult.status === "authentic_match") {
+      console.log("✅ Confirmed that the VM is running the specified docker-compose.yaml");
+    } else {
+      console.log("🚫 Attestation does not match the specified docker-compose.yaml");
+    }
+    process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
+  } else {
+    const quoteResult = await checkTdxCpuAttestation(quoteData);
+    if (raw) {
+      const workloadResult = verifyWorkload(quoteData, composeData);
+      console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
+      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+    }
+    if (!quoteResult.valid) {
+      console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
+      process.exit(1);
+    }
+    const workloadResult = verifyWorkload(quoteData, composeData);
+    console.log(formatWorkloadResult(workloadResult));
+    process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
   }
-  if (!quoteResult.valid) {
-    console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
-    process.exit(1);
-  }
-  const workloadResult = verifyWorkload(
-    quoteHex,
-    readFileSync(composeFile, "utf8"),
-  );
-  console.log(formatWorkloadResult(workloadResult));
-  process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
 } else {
   // Legacy: bare URL defaults to --secretvm
   const url = getPositional();

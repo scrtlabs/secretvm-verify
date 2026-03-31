@@ -7,6 +7,7 @@ export { checkCpuAttestation, detectCpuQuoteType } from "./cpu.js";
 export { checkSecretVm } from "./vm.js";
 export {
     resolveSecretVmVersion,
+    resolveAmdSevVersion,
     verifyTdxWorkload,
     verifySevWorkload,
     verifyWorkload,

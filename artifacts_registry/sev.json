@@ -1,0 +1,194 @@
+[
+    {
+        "vm_type": "prod",
+        "artifacts_ver": "v0.0.26-beta.2",
+        "kernel_hash": "98c41a86a1ba6a9a9d772ae0b028835091b4930f79ea509b595d2080d7df90c2",
+        "initrd_hash": "5f99893492640368a4324e51377296e3ebf4989598297fdea36943da3317aa7a",
+        "vcpu_type": "EPYC",
+        "rootfs_hash": "fc0a5cc3e9e7e1f72dde8d48a12ae592327ef0e8a9e78991af27b6aea52ac47e",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {
+                "gpa": 8388608,
+                "size": 36864,
+                "section_type": 1
+            },
+            {
+                "gpa": 8429568,
+                "size": 12288,
+                "section_type": 1
+            },
+            {
+                "gpa": 8441856,
+                "size": 4096,
+                "section_type": 2
+            },
+            {
+                "gpa": 8445952,
+                "size": 4096,
+                "section_type": 3
+            },
+            {
+                "gpa": 8450048,
+                "size": 4096,
+                "section_type": 4
+            },
+            {
+                "gpa": 8458240,
+                "size": 61440,
+                "section_type": 1
+            },
+            {
+                "gpa": 8454144,
+                "size": 4096,
+                "section_type": 16
+            }
+        ]
+    },
+    {
+        "vm_type": "dev",
+        "artifacts_ver": "v0.0.26-beta.2",
+        "kernel_hash": "98c41a86a1ba6a9a9d772ae0b028835091b4930f79ea509b595d2080d7df90c2",
+        "initrd_hash": "5f99893492640368a4324e51377296e3ebf4989598297fdea36943da3317aa7a",
+        "vcpu_type": "EPYC",
+        "rootfs_hash": "d4cebce1645f69aeb407362aa57ca31e5f9333e49c1e186a3fe55f88ffc93aea",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {
+                "gpa": 8388608,
+                "size": 36864,
+                "section_type": 1
+            },
+            {
+                "gpa": 8429568,
+                "size": 12288,
+                "section_type": 1
+            },
+            {
+                "gpa": 8441856,
+                "size": 4096,
+                "section_type": 2
+            },
+            {
+                "gpa": 8445952,
+                "size": 4096,
+                "section_type": 3
+            },
+            {
+                "gpa": 8450048,
+                "size": 4096,
+                "section_type": 4
+            },
+            {
+                "gpa": 8458240,
+                "size": 61440,
+                "section_type": 1
+            },
+            {
+                "gpa": 8454144,
+                "size": 4096,
+                "section_type": 16
+            }
+        ]
+    },
+    {
+        "vm_type": "prod",
+        "rootfs_hash": "c642e722d7e138e53144149588e899c56f2ceb57fbaffe46cd7699ebab64d1e9",
+        "artifacts_ver": "v0.0.25",
+        "kernel_hash": "98c41a86a1ba6a9a9d772ae0b028835091b4930f79ea509b595d2080d7df90c2",
+        "initrd_hash": "b30910955a1aa138a855f115deb5fbd0a4d3edbb43dc1729fed0d373c477e0a9",
+        "vcpu_type": "EPYC",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {
+                "gpa": 8388608,
+                "size": 36864,
+                "section_type": 1
+            },
+            {
+                "gpa": 8429568,
+                "size": 12288,
+                "section_type": 1
+            },
+            {
+                "gpa": 8441856,
+                "size": 4096,
+                "section_type": 2
+            },
+            {
+                "gpa": 8445952,
+                "size": 4096,
+                "section_type": 3
+            },
+            {
+                "gpa": 8450048,
+                "size": 4096,
+                "section_type": 4
+            },
+            {
+                "gpa": 8458240,
+                "size": 61440,
+                "section_type": 1
+            },
+            {
+                "gpa": 8454144,
+                "size": 4096,
+                "section_type": 16
+            }
+        ]
+    },
+    {
+        "vm_type": "dev",
+        "rootfs_hash": "2ee805626414cabfc29b25460485d5deab6cd1b05928f8227eb0152f195b63c1",
+        "artifacts_ver": "v0.0.25",
+        "kernel_hash": "98c41a86a1ba6a9a9d772ae0b028835091b4930f79ea509b595d2080d7df90c2",
+        "initrd_hash": "b30910955a1aa138a855f115deb5fbd0a4d3edbb43dc1729fed0d373c477e0a9",
+        "vcpu_type": "EPYC",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {
+                "gpa": 8388608,
+                "size": 36864,
+                "section_type": 1
+            },
+            {
+                "gpa": 8429568,
+                "size": 12288,
+                "section_type": 1
+            },
+            {
+                "gpa": 8441856,
+                "size": 4096,
+                "section_type": 2
+            },
+            {
+                "gpa": 8445952,
+                "size": 4096,
+                "section_type": 3
+            },
+            {
+                "gpa": 8450048,
+                "size": 4096,
+                "section_type": 4
+            },
+            {
+                "gpa": 8458240,
+                "size": 61440,
+                "section_type": 1
+            },
+            {
+                "gpa": 8454144,
+                "size": 4096,
+                "section_type": 16
+            }
+        ]
+    }
+]

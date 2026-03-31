@@ -568,8 +568,11 @@ class TestCheckTdxCpuAttestationDockerQuote:
 
 
 # ---------------------------------------------------------------------------
-# Generic verifyWorkload + verifySevWorkload (TODO stub)
+# Generic verifyWorkload + verifySevWorkload
 # ---------------------------------------------------------------------------
+
+AMD_DOCKER_QUOTE = (FIXTURES_DIR / "amd_cpu_docker_check_quote.txt").read_text()
+AMD_DOCKER_COMPOSE = (FIXTURES_DIR / "amd_cpu_docker_check_compose.yaml").read_text()
 
 
 class TestVerifyWorkload:
@@ -589,22 +592,65 @@ class TestVerifyWorkload:
         r = verify_workload(bytes(raw).hex(), docker_compose)
         assert r.status == "not_authentic"
 
+    def test_sev_docker_check_authentic_match(self):
+        r = verify_workload(AMD_DOCKER_QUOTE, AMD_DOCKER_COMPOSE)
+        assert r.status == "authentic_match"
+        assert r.template_name == "small"
+        assert r.artifacts_ver == "v0.0.25"
+        assert r.env == "prod"
+
+    def test_sev_authentic_mismatch_on_compose_change(self, docker_compose):
+        # amd_cpu_quote.txt (v0.0.25 prod) is in the registry;
+        # docker_compose (TDX compose) doesn't match its measurement.
+        amd_quote = (FIXTURES_DIR / "amd_cpu_quote.txt").read_text()
+        r = verify_workload(amd_quote, docker_compose)
+        assert r.status == "authentic_mismatch"
+        assert r.template_name == "small"
+        assert r.artifacts_ver == "v0.0.25"
+
     def test_returns_not_authentic_for_unknown_input(self, docker_compose):
         r = verify_workload("not-a-valid-quote", docker_compose)
         assert r.status == "not_authentic"
 
-    def test_sev_stub_returns_not_authentic(self, docker_compose):
-        # AMD SEV-SNP workload verification is TODO – always not_authentic for now.
-        amd_quote = (
-            FIXTURES_DIR / "amd_cpu_quote.txt"
-        ).read_text()
-        r = verify_workload(amd_quote, docker_compose)
-        assert r.status == "not_authentic"
-
 
 class TestVerifySevWorkload:
-    """verify_sev_workload is a TODO stub – always returns not_authentic."""
+    """verify_sev_workload — real GCTX-based implementation."""
 
-    def test_always_not_authentic(self, docker_compose):
-        r = verify_sev_workload("any-quote-data", docker_compose)
+    def test_authentic_match_for_correct_compose(self):
+        r = verify_sev_workload(AMD_DOCKER_QUOTE, AMD_DOCKER_COMPOSE)
+        assert r.status == "authentic_match"
+        assert r.template_name == "small"
+        assert r.artifacts_ver == "v0.0.25"
+        assert r.env == "prod"
+
+    def test_authentic_mismatch_for_wrong_compose(self):
+        r = verify_sev_workload(AMD_DOCKER_QUOTE, AMD_DOCKER_COMPOSE + "\n# tampered")
+        assert r.status == "authentic_mismatch"
+        assert r.template_name == "small"
+        assert r.artifacts_ver == "v0.0.25"
+        assert r.env == "prod"
+
+    def test_authentic_mismatch_for_corrupted_measurement(self):
+        """A quote with a flipped measurement byte still has a recognised version;
+        the workload layer reports authentic_mismatch (the crypto layer would catch
+        the tampering via VCEK signature verification)."""
+        import base64
+        raw = bytearray(base64.b64decode(AMD_DOCKER_QUOTE.strip()))
+        raw[0x090] ^= 0xFF  # flip first byte of measurement field
+        corrupted = base64.b64encode(bytes(raw)).decode()
+        r = verify_sev_workload(corrupted, AMD_DOCKER_COMPOSE)
+        assert r.status == "authentic_mismatch"
+        assert r.artifacts_ver == "v0.0.25"
+
+    def test_not_authentic_for_garbled_input(self, docker_compose):
+        r = verify_sev_workload("not-valid-base64!!!", docker_compose)
         assert r.status == "not_authentic"
+
+    def test_authentic_mismatch_for_mismatched_compose(self, docker_compose):
+        # amd_cpu_quote.txt (v0.0.25 prod) is in the registry;
+        # docker_compose (TDX compose) doesn't match its measurement.
+        amd_quote = (FIXTURES_DIR / "amd_cpu_quote.txt").read_text()
+        r = verify_sev_workload(amd_quote, docker_compose)
+        assert r.status == "authentic_mismatch"
+        assert r.template_name == "small"
+        assert r.artifacts_ver == "v0.0.25"
