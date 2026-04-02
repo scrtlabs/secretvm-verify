@@ -39,16 +39,18 @@ def _detect_cpu_quote_type(data: str) -> str:
     return "unknown"
 
 
-def check_cpu_attestation(data: str, product: str = "") -> AttestationResult:
+def check_cpu_attestation(data_or_url: str, product: str = "") -> AttestationResult:
     """Verify a CPU attestation quote, auto-detecting Intel TDX vs AMD SEV-SNP.
 
     Args:
-        data: The raw quote text (hex-encoded TDX or base64-encoded SEV-SNP).
+        data_or_url: Raw quote text (hex TDX or base64 SEV-SNP), or a VM URL to fetch from.
         product: AMD product name (only used if quote is SEV-SNP). Auto-detected if empty.
 
     Returns:
         AttestationResult with verification status and parsed report fields.
     """
+    from .url import is_vm_url, fetch_cpu_quote
+    data = fetch_cpu_quote(data_or_url) if is_vm_url(data_or_url) else data_or_url
     quote_type = _detect_cpu_quote_type(data)
 
     if quote_type == "TDX":

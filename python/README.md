@@ -107,15 +107,22 @@ print(format_workload_result(result))  # human-readable summary
 
 ### Verify a CPU quote (auto-detect TDX vs SEV-SNP)
 
+All verification functions accept either raw quote data or a VM URL. When a URL is passed, the quote is automatically fetched from the VM's attestation endpoint.
+
 ```python
 from secretvm.verify import check_cpu_attestation
 
-# Automatically detects whether the quote is Intel TDX (hex) or AMD SEV-SNP (base64)
+# From a file:
 result = check_cpu_attestation(open("cpu_quote.txt").read())
+
+# Or directly from a VM URL:
+result = check_cpu_attestation("blue-moose.vm.scrtlabs.com")
 
 print(result.attestation_type)  # "TDX" or "SEV-SNP"
 print(result.valid)
 ```
+
+This works with all functions: `check_tdx_cpu_attestation`, `check_sev_cpu_attestation`, `check_nvidia_gpu_attestation`, `verify_workload`, `resolve_secretvm_version`. When a URL is passed to `verify_workload`, both the quote and docker-compose are fetched automatically.
 
 ## API reference
 

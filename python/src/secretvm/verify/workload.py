@@ -114,12 +114,14 @@ def _pick_newest_version(entries: list) -> Optional[dict]:
 # Public API
 # ---------------------------------------------------------------------------
 
-def resolve_secretvm_version(data: str) -> Optional[dict]:
-    """Given a TDX quote (hex string), return matching SecretVM version info.
+def resolve_secretvm_version(data_or_url: str) -> Optional[dict]:
+    """Given a TDX quote (hex string) or VM URL, return matching SecretVM version info.
 
     Returns a dict with ``template_name`` and ``artifacts_ver``, or ``None``
     when the quote is not from a known SecretVM.
     """
+    from .url import is_vm_url, fetch_cpu_quote
+    data = fetch_cpu_quote(data_or_url) if is_vm_url(data_or_url) else data_or_url
     try:
         raw = bytes.fromhex(data.strip())
         q = _tdx_parse_quote(raw)
@@ -141,18 +143,26 @@ def resolve_secretvm_version(data: str) -> Optional[dict]:
     }
 
 
-def verify_tdx_workload(data: str, docker_compose_yaml: str) -> WorkloadResult:
+def verify_tdx_workload(data_or_url: str, docker_compose_yaml: str = "") -> WorkloadResult:
     """Verify that a TDX quote was produced by a known SecretVM running the
     given docker-compose YAML.
 
     Args:
-        data: Hex-encoded TDX quote.
-        docker_compose_yaml: Contents of the docker-compose.yaml file.
+        data_or_url: Hex-encoded TDX quote, or a VM URL to fetch quote and compose from.
+        docker_compose_yaml: Contents of the docker-compose.yaml file. Auto-fetched if URL.
 
     Returns:
         WorkloadResult with status "authentic_match", "authentic_mismatch", or
         "not_authentic".
     """
+    from .url import is_vm_url, fetch_cpu_quote, fetch_docker_compose
+    if is_vm_url(data_or_url):
+        data = fetch_cpu_quote(data_or_url)
+        docker_compose_yaml = docker_compose_yaml or fetch_docker_compose(data_or_url)
+    else:
+        data = data_or_url
+        if not docker_compose_yaml:
+            return WorkloadResult(status="not_authentic")
     try:
         raw = bytes.fromhex(data.strip())
         q = _tdx_parse_quote(raw)
@@ -419,22 +429,26 @@ def _parse_sev_family_id(family_id_bytes: bytes) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-def verify_sev_workload(data: str, docker_compose_yaml: str) -> WorkloadResult:
+def verify_sev_workload(data_or_url: str, docker_compose_yaml: str = "") -> WorkloadResult:
     """Verify that an AMD SEV-SNP quote was produced by a known SecretVM running
     the given docker-compose YAML.
 
-    The function recomputes the GCTX launch digest from the registry entry that
-    matches the quote's ``family_id`` / ``image_id`` and the provided compose
-    content, then compares it against the measurement embedded in the report.
-
     Args:
-        data: Base64-encoded AMD SEV-SNP attestation report.
-        docker_compose_yaml: Contents of the docker-compose.yaml file.
+        data_or_url: Base64-encoded SEV-SNP report, or a VM URL to fetch quote and compose from.
+        docker_compose_yaml: Contents of the docker-compose.yaml file. Auto-fetched if URL.
 
     Returns:
         :class:`WorkloadResult` with status ``"authentic_match"``,
         ``"authentic_mismatch"``, or ``"not_authentic"``.
     """
+    from .url import is_vm_url, fetch_cpu_quote, fetch_docker_compose
+    if is_vm_url(data_or_url):
+        data = fetch_cpu_quote(data_or_url)
+        docker_compose_yaml = docker_compose_yaml or fetch_docker_compose(data_or_url)
+    else:
+        data = data_or_url
+        if not docker_compose_yaml:
+            return WorkloadResult(status="not_authentic")
     try:
         raw = base64.b64decode(data.strip())
     except Exception:
@@ -519,25 +533,30 @@ def verify_sev_workload(data: str, docker_compose_yaml: str) -> WorkloadResult:
 # ---------------------------------------------------------------------------
 
 
-def verify_workload(data: str, docker_compose_yaml: str) -> WorkloadResult:
+def verify_workload(data_or_url: str, docker_compose_yaml: str = "") -> WorkloadResult:
     """Verify that a CPU quote was produced by a known SecretVM running the
     given docker-compose YAML.
 
-    Automatically detects whether *data* is an Intel TDX (hex) or AMD SEV-SNP
-    (base64) quote and delegates to the appropriate lower-level function:
-
-    - TDX  -> :func:`verify_tdx_workload`
-    - SEV-SNP -> :func:`verify_sev_workload`
-    - unknown -> returns ``not_authentic``
+    Automatically detects whether *data_or_url* is an Intel TDX (hex) or AMD
+    SEV-SNP (base64) quote and delegates to the appropriate lower-level function.
+    If a VM URL is passed, fetches the quote and docker-compose automatically.
 
     Args:
-        data: Hex-encoded TDX quote **or** base64-encoded SEV-SNP report.
-        docker_compose_yaml: Contents of the docker-compose.yaml file.
+        data_or_url: Quote data or VM URL. If URL, fetches /cpu and /docker-compose.
+        docker_compose_yaml: Contents of the docker-compose.yaml file. Auto-fetched if URL.
 
     Returns:
         :class:`WorkloadResult` with status ``"authentic_match"``,
         ``"authentic_mismatch"``, or ``"not_authentic"``.
     """
+    from .url import is_vm_url, fetch_cpu_quote, fetch_docker_compose
+    if is_vm_url(data_or_url):
+        data = fetch_cpu_quote(data_or_url)
+        docker_compose_yaml = docker_compose_yaml or fetch_docker_compose(data_or_url)
+    else:
+        data = data_or_url
+        if not docker_compose_yaml:
+            return WorkloadResult(status="not_authentic")
     quote_type = _detect_cpu_quote_type(data)
     if quote_type == "TDX":
         return verify_tdx_workload(data, docker_compose_yaml)

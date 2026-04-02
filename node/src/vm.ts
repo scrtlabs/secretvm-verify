@@ -12,7 +12,7 @@ const SECRET_VM_PORT = 29343;
 // ---------------------------------------------------------------------------
 
 /** Extract YAML from an HTML-wrapped response (the VM serves docker-compose inside a &lt;pre&gt; tag with HTML-encoded entities). */
-function extractDockerCompose(raw: string): string {
+export function extractDockerCompose(raw: string): string {
   let text = raw.trim();
   // If wrapped in HTML, extract content from <pre>...</pre>
   const preMatch = text.match(/<pre>([\s\S]*?)<\/pre>/i);
@@ -196,7 +196,7 @@ export async function checkSecretVm(
     const dockerCompose = extractDockerCompose(await resp.text());
     checks.workload_fetched = true;
 
-    const workloadResult = verifyWorkload(cpuData, dockerCompose);
+    const workloadResult = await verifyWorkload(cpuData, dockerCompose);
     checks.workload_verified = workloadResult.status === "authentic_match";
     report.workload = workloadResult;
     if (workloadResult.status === "authentic_mismatch") {

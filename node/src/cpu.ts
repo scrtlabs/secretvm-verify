@@ -1,6 +1,7 @@
 import { AttestationResult, makeResult } from "./types.js";
 import { checkTdxCpuAttestation } from "./tdx.js";
 import { checkSevCpuAttestation } from "./amd.js";
+import { isVmUrl, fetchCpuQuote } from "./url.js";
 
 /**
  * Detect whether the quote is Intel TDX (hex) or AMD SEV-SNP (base64).
@@ -39,9 +40,10 @@ export function detectCpuQuoteType(data: string): "TDX" | "SEV-SNP" | "unknown" 
  * Verify a CPU attestation quote, auto-detecting Intel TDX vs AMD SEV-SNP.
  */
 export async function checkCpuAttestation(
-  data: string,
+  dataOrUrl: string,
   product = "",
 ): Promise<AttestationResult> {
+  const data = isVmUrl(dataOrUrl) ? await fetchCpuQuote(dataOrUrl) : dataOrUrl;
   const quoteType = detectCpuQuoteType(data);
 
   if (quoteType === "TDX") {

@@ -193,15 +193,17 @@ def _tdx_fetch_tcb_status(fmspc: str, tee_tcb_svn: bytes) -> str:
     return "OutOfDate (no matching TCB level found)"
 
 
-def check_tdx_cpu_attestation(data: str) -> AttestationResult:
+def check_tdx_cpu_attestation(data_or_url: str) -> AttestationResult:
     """Verify an Intel TDX attestation quote.
 
     Args:
-        data: Hex-encoded TDX quote (content of cpu_quote.txt).
+        data_or_url: Hex-encoded TDX quote, or a VM URL to fetch the quote from.
 
     Returns:
         AttestationResult with verification status and parsed report fields.
     """
+    from .url import is_vm_url, fetch_cpu_quote
+    data = fetch_cpu_quote(data_or_url) if is_vm_url(data_or_url) else data_or_url
     errors = []
     checks = {}
 

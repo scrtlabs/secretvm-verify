@@ -1,5 +1,6 @@
 import { parseTdxQuoteFields } from "./tdx.js";
 import { detectCpuQuoteType } from "./cpu.js";
+import { isVmUrl, fetchCpuQuote, fetchDockerCompose } from "./url.js";
 import {
     findMatchingArtifacts,
     pickNewestVersion,
@@ -37,9 +38,10 @@ export interface WorkloadResult {
  * Given a TDX quote (hex string), look up the matching SecretVM version and
  * template.  Returns null when the quote is not from a known SecretVM.
  */
-export function resolveSecretVmVersion(
-    quoteHex: string,
-): { template_name: string; artifacts_ver: string } | null {
+export async function resolveSecretVmVersion(
+    quoteHexOrUrl: string,
+): Promise<{ template_name: string; artifacts_ver: string } | null> {
+    const quoteHex = isVmUrl(quoteHexOrUrl) ? await fetchCpuQuote(quoteHexOrUrl) : quoteHexOrUrl;
     const { mrtd, rtmr0, rtmr1, rtmr2 } = parseTdxQuoteFields(quoteHex);
     const matches = findMatchingArtifacts(mrtd, rtmr0, rtmr1, rtmr2);
     const newest = pickNewestVersion(matches);
@@ -54,9 +56,10 @@ export function resolveSecretVmVersion(
  * Given an AMD SEV-SNP attestation report (base64), look up the matching
  * SecretVM registry entry.  Returns null when not found.
  */
-export function resolveAmdSevVersion(
-    quoteBase64: string,
-): { template_name: string; vm_type: string; artifacts_ver: string } | null {
+export async function resolveAmdSevVersion(
+    quoteBase64OrUrl: string,
+): Promise<{ template_name: string; vm_type: string; artifacts_ver: string } | null> {
+    const quoteBase64 = isVmUrl(quoteBase64OrUrl) ? await fetchCpuQuote(quoteBase64OrUrl) : quoteBase64OrUrl;
     let raw: Buffer;
     try {
         raw = Buffer.from(quoteBase64.trim(), "base64");
@@ -102,10 +105,20 @@ export function resolveAmdSevVersion(
  *  5. If any row matches → authentic_match.
  *  6. Otherwise → authentic_mismatch.
  */
-export function verifyTdxWorkload(
-    quoteHex: string,
-    dockerComposeYaml: string,
-): WorkloadResult {
+export async function verifyTdxWorkload(
+    quoteHexOrUrl: string,
+    dockerComposeYaml?: string,
+): Promise<WorkloadResult> {
+    let quoteHex: string;
+    let compose: string;
+    if (isVmUrl(quoteHexOrUrl)) {
+        quoteHex = await fetchCpuQuote(quoteHexOrUrl);
+        compose = dockerComposeYaml ?? await fetchDockerCompose(quoteHexOrUrl);
+    } else {
+        quoteHex = quoteHexOrUrl;
+        if (!dockerComposeYaml) return { status: "not_authentic" };
+        compose = dockerComposeYaml;
+    }
     let mrtd: string, rtmr0: string, rtmr1: string, rtmr2: string, quoteRtmr3: string;
     try {
         const fields = parseTdxQuoteFields(quoteHex);
@@ -133,7 +146,7 @@ export function verifyTdxWorkload(
 
     // Check compose against every candidate entry (different rootfs_data or envs)
     for (const entry of candidates) {
-        const expected = calculateRtmr3(dockerComposeYaml, entry.rootfs_data);
+        const expected = calculateRtmr3(compose, entry.rootfs_data);
         if (expected === quoteRtmr3) {
             return {
                 status: "authentic_match",
@@ -193,10 +206,20 @@ export function formatWorkloadResult(r: WorkloadResult): string {
  * @param quoteBase64      Base64-encoded AMD SEV-SNP attestation report.
  * @param dockerComposeYaml  Contents of the docker-compose.yaml file.
  */
-export function verifySevWorkload(
-    quoteBase64: string,
-    dockerComposeYaml: string,
-): WorkloadResult {
+export async function verifySevWorkload(
+    quoteBase64OrUrl: string,
+    dockerComposeYaml?: string,
+): Promise<WorkloadResult> {
+    let quoteBase64: string;
+    let compose: string;
+    if (isVmUrl(quoteBase64OrUrl)) {
+        quoteBase64 = await fetchCpuQuote(quoteBase64OrUrl);
+        compose = dockerComposeYaml ?? await fetchDockerCompose(quoteBase64OrUrl);
+    } else {
+        quoteBase64 = quoteBase64OrUrl;
+        if (!dockerComposeYaml) return { status: "not_authentic" };
+        compose = dockerComposeYaml;
+    }
     let raw: Buffer;
     try {
         raw = Buffer.from(quoteBase64.trim(), "base64");
@@ -228,7 +251,7 @@ export function verifySevWorkload(
     const { vmType, templateName, vcpus } = family;
 
     // raw SHA256 — matches jeeves compute_file_hash() (no YAML normalization)
-    const composeHash = createHash("sha256").update(dockerComposeYaml, "utf8").digest("hex");
+    const composeHash = createHash("sha256").update(compose, "utf8").digest("hex");
 
     const candidates = registry.filter((e) => e.vm_type === vmType);
     const versionEntries = imageId ? candidates.filter((e) => e.artifacts_ver === imageId) : [];
@@ -296,12 +319,21 @@ export function verifySevWorkload(
  * @param quoteData       Hex-encoded TDX quote **or** base64-encoded SEV-SNP report.
  * @param dockerComposeYaml  Contents of the docker-compose.yaml file.
  */
-export function verifyWorkload(
-    quoteData: string,
-    dockerComposeYaml: string,
-): WorkloadResult {
-    const type = detectCpuQuoteType(quoteData);
-    if (type === "TDX") return verifyTdxWorkload(quoteData, dockerComposeYaml);
-    if (type === "SEV-SNP") return verifySevWorkload(quoteData, dockerComposeYaml);
+export async function verifyWorkload(
+    quoteDataOrUrl: string,
+    dockerComposeYaml?: string,
+): Promise<WorkloadResult> {
+    if (isVmUrl(quoteDataOrUrl)) {
+        const quoteData = await fetchCpuQuote(quoteDataOrUrl);
+        const compose = dockerComposeYaml ?? await fetchDockerCompose(quoteDataOrUrl);
+        const type = detectCpuQuoteType(quoteData);
+        if (type === "TDX") return verifyTdxWorkload(quoteData, compose);
+        if (type === "SEV-SNP") return verifySevWorkload(quoteData, compose);
+        return { status: "not_authentic" };
+    }
+    if (!dockerComposeYaml) return { status: "not_authentic" };
+    const type = detectCpuQuoteType(quoteDataOrUrl);
+    if (type === "TDX") return verifyTdxWorkload(quoteDataOrUrl, dockerComposeYaml);
+    if (type === "SEV-SNP") return verifySevWorkload(quoteDataOrUrl, dockerComposeYaml);
     return { status: "not_authentic" };
 }

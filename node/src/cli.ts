@@ -13,6 +13,7 @@ import {
   formatWorkloadResult,
 } from "./index.js";
 import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
+import { extractDockerCompose } from "./vm.js";
 import type { AttestationResult } from "./types.js";
 
 const args = process.argv.slice(2);
@@ -34,23 +35,65 @@ function getPositional(): string | undefined {
 const raw = getFlag("--raw");
 const verbose = getFlag("--verbose") || getFlag("-v");
 const product = getFlagValue("--product") ?? "";
+const vmUrl = getFlagValue("--vm");
+
+const SECRET_VM_PORT = 29343;
+
+async function fetchFromVm(endpoint: string): Promise<string> {
+  let url = vmUrl!;
+  if (!url.includes("://")) url = `https://${url}`;
+  const parsed = new URL(url);
+  const port = parsed.port || SECRET_VM_PORT;
+  const base = `https://${parsed.hostname}:${port}`;
+  const resp = await fetch(`${base}/${endpoint}`);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${base}/${endpoint}`);
+  const text = await resp.text();
+  if (endpoint === "docker-compose") return extractDockerCompose(text);
+  return text;
+}
+
+function getQuoteData(flagName: string, shortFlag?: string): string {
+  if (vmUrl) return ""; // placeholder, will be fetched async
+  const file = getFlagValue(flagName) ?? (shortFlag ? getFlagValue(shortFlag) : undefined) ?? getPositional();
+  if (!file) {
+    console.log(USAGE);
+    process.exit(1);
+  }
+  return readFileSync(file, "utf8");
+}
+
+async function getCpuQuote(flagName: string, shortFlag?: string): Promise<string> {
+  if (vmUrl) return fetchFromVm("cpu");
+  const file = getFlagValue(flagName) ?? (shortFlag ? getFlagValue(shortFlag) : undefined) ?? getPositional();
+  if (!file) { console.log(USAGE); process.exit(1); }
+  return readFileSync(file, "utf8");
+}
+
+async function getGpuQuote(flagName: string): Promise<string> {
+  if (vmUrl) return fetchFromVm("gpu");
+  const file = getFlagValue(flagName) ?? getPositional();
+  if (!file) { console.log(USAGE); process.exit(1); }
+  return readFileSync(file, "utf8");
+}
 
 const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--raw] [--verbose|-v]
 
 Commands:
   --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
-  --cpu <file>                      Verify a CPU quote (auto-detect TDX vs SEV-SNP)
-  --tdx <file>                      Verify an Intel TDX quote
-  --sev <file>                      Verify an AMD SEV-SNP report
-  --gpu <file>                      Verify an NVIDIA GPU attestation
-  --resolve-version, -rv <file>     Resolve SecretVM version from TDX or AMD SEV-SNP quote
-  --verify-workload, -vw <file> --compose <file>
-                                    Verify TDX or AMD SEV-SNP workload against a docker-compose.yaml
+  --cpu <file|--vm url>             Verify a CPU quote (auto-detect TDX vs SEV-SNP)
+  --tdx <file|--vm url>             Verify an Intel TDX quote
+  --sev <file|--vm url>             Verify an AMD SEV-SNP report
+  --gpu <file|--vm url>             Verify an NVIDIA GPU attestation
+  --resolve-version, -rv <file|--vm url>
+                                    Resolve SecretVM version from TDX or AMD SEV-SNP quote
+  --verify-workload, -vw <file|--vm url> [--compose <file>]
+                                    Verify workload against a docker-compose (fetched from VM if --vm)
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain
   --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
 
 Options:
+  --vm <url>           Fetch quote from a VM instead of a file (works with --cpu, --tdx, --sev, --gpu, -rv, -vw)
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin)
   --raw                Output raw JSON result
@@ -59,10 +102,13 @@ Options:
 Examples:
   secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
   secretvm-verify --tdx cpu_quote.txt
+  secretvm-verify --tdx --vm blue-moose.vm.scrtlabs.com
+  secretvm-verify --cpu --vm blue-moose.vm.scrtlabs.com
   secretvm-verify --sev amd_cpu_quote.txt --product Genoa
   secretvm-verify --gpu gpu_attest.txt
   secretvm-verify --cpu cpu_quote.txt --raw
-  secretvm-verify --resolve-version cpu_quote.txt
+  secretvm-verify -rv --vm blue-moose.vm.scrtlabs.com
+  secretvm-verify -vw --vm blue-moose.vm.scrtlabs.com
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml`;
 
 // Determine which command to run
@@ -77,50 +123,33 @@ if (getFlag("--secretvm")) {
   if (!raw) console.log(`Checking attestation for ${url} ...\n`);
   result = await checkSecretVm(url, product);
 } else if (getFlag("--cpu")) {
-  const file = getFlagValue("--cpu") ?? getPositional();
-  if (!file) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  if (!raw) console.log(`Verifying CPU quote from ${file} ...\n`);
-  result = await checkCpuAttestation(readFileSync(file, "utf8"), product);
+  const quoteData = await getCpuQuote("--cpu");
+  const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
+  if (!raw) console.log(`Verifying CPU quote from ${source} ...\n`);
+  result = await checkCpuAttestation(quoteData, product);
 } else if (getFlag("--tdx")) {
-  const file = getFlagValue("--tdx") ?? getPositional();
-  if (!file) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  if (!raw) console.log(`Verifying TDX quote from ${file} ...\n`);
-  result = await checkTdxCpuAttestation(readFileSync(file, "utf8"));
+  const quoteData = await getCpuQuote("--tdx");
+  const source = vmUrl ? vmUrl : getFlagValue("--tdx") ?? getPositional();
+  if (!raw) console.log(`Verifying TDX quote from ${source} ...\n`);
+  result = await checkTdxCpuAttestation(quoteData);
 } else if (getFlag("--sev")) {
-  const file = getFlagValue("--sev") ?? getPositional();
-  if (!file) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  if (!raw) console.log(`Verifying AMD SEV-SNP report from ${file} ...\n`);
-  result = await checkSevCpuAttestation(readFileSync(file, "utf8"), product);
+  const quoteData = await getCpuQuote("--sev");
+  const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
+  if (!raw) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
+  result = await checkSevCpuAttestation(quoteData, product);
 } else if (getFlag("--gpu")) {
-  const file = getFlagValue("--gpu") ?? getPositional();
-  if (!file) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  if (!raw) console.log(`Verifying NVIDIA GPU attestation from ${file} ...\n`);
-  result = await checkNvidiaGpuAttestation(readFileSync(file, "utf8"));
+  const quoteData = await getGpuQuote("--gpu");
+  const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
+  if (!raw) console.log(`Verifying NVIDIA GPU attestation from ${source} ...\n`);
+  result = await checkNvidiaGpuAttestation(quoteData);
 } else if (getFlag("--resolve-version") || getFlag("-rv")) {
-  const file = getFlagValue("--resolve-version") ?? getFlagValue("-rv") ?? getPositional();
-  if (!file) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  const quoteData = readFileSync(file, "utf8");
+  const quoteData = await getCpuQuote("--resolve-version", "-rv");
   const quoteType = detectCpuQuoteType(quoteData);
   if (quoteType === "SEV-SNP") {
     // Step 1: cryptographic quote verification
     const quoteResult = await checkSevCpuAttestation(quoteData, product);
     // Step 2: registry lookup
-    const version = resolveAmdSevVersion(quoteData);
+    const version = await resolveAmdSevVersion(quoteData);
     if (raw) {
       console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
       process.exit(quoteResult.valid && !!version ? 0 : 1);
@@ -140,7 +169,7 @@ if (getFlag("--secretvm")) {
     process.exit(quoteResult.valid && !!version ? 0 : 1);
   } else {
     const quoteResult = await checkTdxCpuAttestation(quoteData);
-    const version = resolveSecretVmVersion(quoteData);
+    const version = await resolveSecretVmVersion(quoteData);
     if (raw) {
       console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
       process.exit(quoteResult.valid && !!version ? 0 : 1);
@@ -158,20 +187,21 @@ if (getFlag("--secretvm")) {
     process.exit(!!version ? 0 : 1);
   }
 } else if (getFlag("--verify-workload") || getFlag("-vw")) {
-  const quoteFile = getFlagValue("--verify-workload") ?? getFlagValue("-vw") ?? getPositional();
-  const composeFile = getFlagValue("--compose");
-  if (!quoteFile || !composeFile) {
-    console.log(USAGE);
-    process.exit(1);
+  const quoteData = await getCpuQuote("--verify-workload", "-vw");
+  let composeData: string;
+  if (vmUrl) {
+    composeData = await fetchFromVm("docker-compose");
+  } else {
+    const composeFile = getFlagValue("--compose");
+    if (!composeFile) { console.log(USAGE); process.exit(1); }
+    composeData = readFileSync(composeFile, "utf8");
   }
-  const quoteData = readFileSync(quoteFile, "utf8");
-  const composeData = readFileSync(composeFile, "utf8");
   const quoteType = detectCpuQuoteType(quoteData);
   if (quoteType === "SEV-SNP") {
     // Step 1: cryptographic quote verification
     const quoteResult = await checkSevCpuAttestation(quoteData, product);
     if (raw) {
-      const workloadResult = verifyWorkload(quoteData, composeData);
+      const workloadResult = await verifyWorkload(quoteData, composeData);
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
@@ -180,14 +210,14 @@ if (getFlag("--secretvm")) {
       process.exit(1);
     }
     // Step 2: registry lookup — confirms this is a known SecretVM
-    const version = resolveAmdSevVersion(quoteData);
+    const version = await resolveAmdSevVersion(quoteData);
     if (!version) {
       console.log("🚫 SecretVM artifacts not found in registry (unknown version)");
       process.exit(1);
     }
     console.log(`✅ Authentic SecretVM confirmed: ${version.vm_type}/${version.template_name} ${version.artifacts_ver}`);
     // Step 3: workload (compose hash) verification
-    const workloadResult = verifyWorkload(quoteData, composeData);
+    const workloadResult = await verifyWorkload(quoteData, composeData);
     if (workloadResult.status === "authentic_match") {
       console.log("✅ Confirmed that the VM is running the specified docker-compose.yaml");
     } else {
@@ -197,7 +227,7 @@ if (getFlag("--secretvm")) {
   } else {
     const quoteResult = await checkTdxCpuAttestation(quoteData);
     if (raw) {
-      const workloadResult = verifyWorkload(quoteData, composeData);
+      const workloadResult = await verifyWorkload(quoteData, composeData);
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
@@ -205,7 +235,7 @@ if (getFlag("--secretvm")) {
       console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
       process.exit(1);
     }
-    const workloadResult = verifyWorkload(quoteData, composeData);
+    const workloadResult = await verifyWorkload(quoteData, composeData);
     console.log(formatWorkloadResult(workloadResult));
     process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
   }

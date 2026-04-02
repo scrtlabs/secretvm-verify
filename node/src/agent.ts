@@ -332,7 +332,7 @@ export async function verifyAgent(
     const dockerCompose = extractDockerCompose(await resp.text());
     checks.workload_fetched = true;
 
-    const workloadResult = verifyWorkload(cpuData, dockerCompose);
+    const workloadResult = await verifyWorkload(cpuData, dockerCompose);
     checks.workload_verified = workloadResult.status === "authentic_match";
     report.workload = workloadResult;
     if (workloadResult.status === "authentic_mismatch") {

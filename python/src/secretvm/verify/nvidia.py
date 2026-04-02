@@ -79,15 +79,17 @@ def _gpu_verify_jwt_signature(token: str, jwks: dict) -> bool:
         return False
 
 
-def check_nvidia_gpu_attestation(data: str) -> AttestationResult:
+def check_nvidia_gpu_attestation(data_or_url: str) -> AttestationResult:
     """Verify NVIDIA GPU attestation via the NVIDIA Remote Attestation Service.
 
     Args:
-        data: JSON attestation payload (content of gpu_attest.txt).
+        data_or_url: JSON attestation payload, or a VM URL to fetch the GPU quote from.
 
     Returns:
         AttestationResult with verification status and parsed attestation claims.
     """
+    from .url import is_vm_url, fetch_gpu_quote
+    data = fetch_gpu_quote(data_or_url) if is_vm_url(data_or_url) else data_or_url
     errors = []
     checks = {}
 

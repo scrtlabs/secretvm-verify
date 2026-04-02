@@ -177,16 +177,18 @@ def _amd_verify_report_signature(rpt: dict, vcek_cert) -> bool:
         return False
 
 
-def check_sev_cpu_attestation(data: str, product: str = "") -> AttestationResult:
+def check_sev_cpu_attestation(data_or_url: str, product: str = "") -> AttestationResult:
     """Verify an AMD SEV-SNP attestation report.
 
     Args:
-        data: Base64-encoded attestation report (content of amd_cpu_quote.txt).
+        data_or_url: Base64-encoded attestation report, or a VM URL to fetch the quote from.
         product: AMD product name (Genoa, Milan, Turin). Auto-detected if empty.
 
     Returns:
         AttestationResult with verification status and parsed report fields.
     """
+    from .url import is_vm_url, fetch_cpu_quote
+    data = fetch_cpu_quote(data_or_url) if is_vm_url(data_or_url) else data_or_url
     errors = []
     checks = {}
 

@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { isVmUrl, fetchCpuQuote } from "./url.js";
 import { AttestationResult, makeResult } from "./types.js";
 
 const AMD_KDS_BASE = "https://kdsintf.amd.com";
@@ -249,9 +250,10 @@ function verifyReportSignature(
 // ---------------------------------------------------------------------------
 
 export async function checkSevCpuAttestation(
-  data: string,
+  dataOrUrl: string,
   product = "",
 ): Promise<AttestationResult> {
+  const data = isVmUrl(dataOrUrl) ? await fetchCpuQuote(dataOrUrl) : dataOrUrl;
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
 

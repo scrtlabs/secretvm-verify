@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { AttestationResult, makeResult } from "./types.js";
+import { isVmUrl, fetchGpuQuote } from "./url.js";
 
 const NRAS_URL = "https://nras.attestation.nvidia.com/v4/attest/gpu";
 const NRAS_JWKS_URL =
@@ -94,8 +95,9 @@ function ecdsaRsToDer(r: Buffer, s: Buffer): Buffer {
 // ---------------------------------------------------------------------------
 
 export async function checkNvidiaGpuAttestation(
-  data: string,
+  dataOrUrl: string,
 ): Promise<AttestationResult> {
+  const data = isVmUrl(dataOrUrl) ? await fetchGpuQuote(dataOrUrl) : dataOrUrl;
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
 

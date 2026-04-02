@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { AttestationResult, makeResult } from "./types.js";
+import { isVmUrl, fetchCpuQuote } from "./url.js";
 
 const INTEL_PCS_BASE =
     "https://pccs.scrtlabs.com/sgx/certification/v4";
@@ -159,8 +160,9 @@ async function fetchTcbStatus(
 // ---------------------------------------------------------------------------
 
 export async function checkTdxCpuAttestation(
-  data: string,
+  dataOrUrl: string,
 ): Promise<AttestationResult> {
+  const data = isVmUrl(dataOrUrl) ? await fetchCpuQuote(dataOrUrl) : dataOrUrl;
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
 
