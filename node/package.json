@@ -1,6 +1,6 @@
 {
   "name": "secretvm-verify",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Attestation verification for Intel TDX, AMD SEV-SNP, and NVIDIA GPU",
   "type": "module",
   "main": "dist/index.js",
