@@ -221,10 +221,16 @@ Verifies an ERC-8004 agent given its metadata. Discovers teequote/workload endpo
 
 ### RPC Configuration
 
-RPC URL resolution priority:
-1. `SECRETVM_RPC_<CHAIN>` env var (e.g. `SECRETVM_RPC_BASE`)
-2. `SECRETVM_RPC_URL` env var (generic fallback)
-3. Default public RPC for the chain
+An RPC URL **must** be provided via environment variable to use the ERC-8004 agent functions. No default RPCs are shipped with the package.
+
+Set one of:
+- `SECRETVM_RPC_<CHAIN>` — chain-specific (e.g. `SECRETVM_RPC_BASE`, `SECRETVM_RPC_ETHEREUM`)
+- `SECRETVM_RPC_URL` — generic fallback for all chains
+
+Example:
+```bash
+export SECRETVM_RPC_BASE="https://base-mainnet.g.alchemy.com/v2/YOUR_KEY"
+```
 
 Supported chains: ethereum, base, arbitrum, sepolia, polygon, bnb, gnosis, linea, taiko, celo, avalanche, optimism, abstract, megaeth, mantle, soneium, xlayer, metis.
 

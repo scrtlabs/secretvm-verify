@@ -1,0 +1,6 @@
+src/
+tsconfig.json
+*.txt
+dist/test.*
+dist/workload.test.*
+dist/*.test.*

@@ -96,7 +96,7 @@ console.log(metadata.supportedTrust);  // ["tee-attestation"]
 const result = await verifyAgent(metadata);
 ```
 
-**RPC configuration:** Set `SECRETVM_RPC_BASE` (or `SECRETVM_RPC_<CHAIN>`) environment variable to use your own RPC endpoint. Falls back to public RPCs if not set.
+**RPC configuration (required):** Set `SECRETVM_RPC_BASE` (or `SECRETVM_RPC_<CHAIN>`) environment variable with your RPC endpoint. No default RPCs are included — an error is thrown if no RPC is configured.
 
 ### Resolve SecretVM version from a TDX quote
 

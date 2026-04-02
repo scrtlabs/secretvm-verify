@@ -17,24 +17,24 @@ _DEFAULT_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
 _SEPOLIA_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e"
 
 _CHAINS: dict[str, dict] = {
-    "ethereum":  {"chain_id": 1,        "name": "Ethereum",        "registry": _DEFAULT_REGISTRY, "default_rpc": "https://eth.llamarpc.com"},
-    "base":      {"chain_id": 8453,     "name": "Base",            "registry": _DEFAULT_REGISTRY, "default_rpc": "https://mainnet.base.org"},
-    "arbitrum":  {"chain_id": 42161,    "name": "Arbitrum",        "registry": _DEFAULT_REGISTRY, "default_rpc": "https://arb1.arbitrum.io/rpc"},
-    "sepolia":   {"chain_id": 11155111, "name": "Sepolia",         "registry": _SEPOLIA_REGISTRY,  "default_rpc": "https://ethereum-sepolia-rpc.publicnode.com"},
-    "polygon":   {"chain_id": 137,      "name": "Polygon",         "registry": _DEFAULT_REGISTRY, "default_rpc": "https://polygon-rpc.com/"},
-    "bnb":       {"chain_id": 56,       "name": "BNB Smart Chain", "registry": _DEFAULT_REGISTRY, "default_rpc": "https://bsc-dataseed.binance.org/"},
-    "gnosis":    {"chain_id": 100,      "name": "Gnosis",          "registry": _DEFAULT_REGISTRY, "default_rpc": "https://rpc.gnosischain.com"},
-    "linea":     {"chain_id": 59144,    "name": "Linea",           "registry": _DEFAULT_REGISTRY, "default_rpc": "https://rpc.linea.build"},
-    "taiko":     {"chain_id": 167000,   "name": "Taiko",           "registry": _DEFAULT_REGISTRY, "default_rpc": "https://rpc.mainnet.taiko.xyz"},
-    "celo":      {"chain_id": 42220,    "name": "Celo",            "registry": _DEFAULT_REGISTRY, "default_rpc": "https://forno.celo.org"},
-    "avalanche": {"chain_id": 43114,    "name": "Avalanche",       "registry": _DEFAULT_REGISTRY, "default_rpc": "https://api.avax.network/ext/bc/C/rpc"},
-    "optimism":  {"chain_id": 10,       "name": "Optimism",        "registry": _DEFAULT_REGISTRY, "default_rpc": "https://mainnet.optimism.io"},
-    "abstract":  {"chain_id": 2741,     "name": "Abstract",        "registry": _DEFAULT_REGISTRY, "default_rpc": "https://api.mainnet.abs.xyz"},
-    "megaeth":   {"chain_id": 1000001,  "name": "MegaETH",         "registry": _DEFAULT_REGISTRY, "default_rpc": "https://rpc.megaeth.com"},
-    "mantle":    {"chain_id": 5000,     "name": "Mantle",          "registry": _DEFAULT_REGISTRY, "default_rpc": "https://rpc.mantle.xyz"},
-    "soneium":   {"chain_id": 1946,     "name": "Soneium",         "registry": _DEFAULT_REGISTRY, "default_rpc": "https://rpc.soneium.org"},
-    "xlayer":    {"chain_id": 196,      "name": "X Layer",         "registry": _DEFAULT_REGISTRY, "default_rpc": "https://rpc.xlayer.tech"},
-    "metis":     {"chain_id": 1088,     "name": "Metis",           "registry": _DEFAULT_REGISTRY, "default_rpc": "https://andromeda.metis.io/?owner=1088"},
+    "ethereum":  {"chain_id": 1,        "name": "Ethereum",        "registry": _DEFAULT_REGISTRY},
+    "base":      {"chain_id": 8453,     "name": "Base",            "registry": _DEFAULT_REGISTRY},
+    "arbitrum":  {"chain_id": 42161,    "name": "Arbitrum",        "registry": _DEFAULT_REGISTRY},
+    "sepolia":   {"chain_id": 11155111, "name": "Sepolia",         "registry": _SEPOLIA_REGISTRY},
+    "polygon":   {"chain_id": 137,      "name": "Polygon",         "registry": _DEFAULT_REGISTRY},
+    "bnb":       {"chain_id": 56,       "name": "BNB Smart Chain", "registry": _DEFAULT_REGISTRY},
+    "gnosis":    {"chain_id": 100,      "name": "Gnosis",          "registry": _DEFAULT_REGISTRY},
+    "linea":     {"chain_id": 59144,    "name": "Linea",           "registry": _DEFAULT_REGISTRY},
+    "taiko":     {"chain_id": 167000,   "name": "Taiko",           "registry": _DEFAULT_REGISTRY},
+    "celo":      {"chain_id": 42220,    "name": "Celo",            "registry": _DEFAULT_REGISTRY},
+    "avalanche": {"chain_id": 43114,    "name": "Avalanche",       "registry": _DEFAULT_REGISTRY},
+    "optimism":  {"chain_id": 10,       "name": "Optimism",        "registry": _DEFAULT_REGISTRY},
+    "abstract":  {"chain_id": 2741,     "name": "Abstract",        "registry": _DEFAULT_REGISTRY},
+    "megaeth":   {"chain_id": 1000001,  "name": "MegaETH",         "registry": _DEFAULT_REGISTRY},
+    "mantle":    {"chain_id": 5000,     "name": "Mantle",          "registry": _DEFAULT_REGISTRY},
+    "soneium":   {"chain_id": 1946,     "name": "Soneium",         "registry": _DEFAULT_REGISTRY},
+    "xlayer":    {"chain_id": 196,      "name": "X Layer",         "registry": _DEFAULT_REGISTRY},
+    "metis":     {"chain_id": 1088,     "name": "Metis",           "registry": _DEFAULT_REGISTRY},
 }
 
 _REGISTRY_ABI = [
@@ -70,7 +70,9 @@ def get_rpc_url(chain: str) -> str:
     Priority:
         1. SECRETVM_RPC_<CHAIN> env var (e.g. SECRETVM_RPC_BASE)
         2. SECRETVM_RPC_URL env var (generic fallback)
-        3. Default public RPC for the chain
+
+    Raises:
+        RuntimeError: If no RPC URL is configured for the chain.
     """
     import os
     env_key = f"SECRETVM_RPC_{chain.upper()}"
@@ -78,7 +80,10 @@ def get_rpc_url(chain: str) -> str:
         return os.environ[env_key]
     if os.environ.get("SECRETVM_RPC_URL"):
         return os.environ["SECRETVM_RPC_URL"]
-    return get_chain_config(chain)["default_rpc"]
+    raise RuntimeError(
+        f"No RPC URL configured for {chain}. "
+        f"Set the {env_key} or SECRETVM_RPC_URL environment variable."
+    )
 
 
 def list_chains() -> list[str]:

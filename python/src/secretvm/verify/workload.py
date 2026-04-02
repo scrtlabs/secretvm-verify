@@ -61,7 +61,7 @@ def _load_tdx_registry() -> list:
     if _tdx_registry_cache is not None:
         return _tdx_registry_cache
 
-    csv_path = Path(__file__).parents[4] / "artifacts_registry" / "tdx.csv"
+    csv_path = Path(__file__).parent / "data" / "tdx.csv"
     rows = []
     with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -388,7 +388,7 @@ def _load_sev_registry() -> list:
     global _sev_registry_cache
     if _sev_registry_cache is not None:
         return _sev_registry_cache
-    json_path = Path(__file__).parents[4] / "artifacts_registry" / "sev.json"
+    json_path = Path(__file__).parent / "data" / "sev.json"
     with open(json_path, "r", encoding="utf-8") as f:
         _sev_registry_cache = json.load(f)
     return _sev_registry_cache

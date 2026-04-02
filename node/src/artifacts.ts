@@ -18,7 +18,7 @@ export interface TdxArtifactEntry {
 function csvPath(): string {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    return join(__dirname, "..", "..", "artifacts_registry", "tdx.csv");
+    return join(__dirname, "..", "data", "tdx.csv");
 }
 
 function parseCsv(content: string): TdxArtifactEntry[] {
@@ -141,7 +141,7 @@ export interface SevArtifactEntry {
 function sevJsonPath(): string {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = dirname(__filename);
-    return join(__dirname, "..", "..", "artifacts_registry", "sev.json");
+    return join(__dirname, "..", "data", "sev.json");
 }
 
 let _sevRegistry: SevArtifactEntry[] | null = null;
