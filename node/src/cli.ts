@@ -111,8 +111,25 @@ Examples:
   secretvm-verify -vw --vm blue-moose.vm.scrtlabs.com
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml`;
 
+function formatError(err: any): string {
+  const cause = err?.cause;
+  if (cause?.code === "ECONNREFUSED") {
+    return `Could not connect to ${cause.address}:${cause.port} - Connection refused`;
+  }
+  if (cause?.code === "ENOTFOUND") {
+    return `Could not resolve hostname: ${cause.hostname}`;
+  }
+  if (cause?.code === "ETIMEDOUT" || cause?.code === "ECONNRESET") {
+    return `Connection to ${cause.address || "host"}:${cause.port || ""} timed out`;
+  }
+  if (err?.message) return err.message;
+  return String(err);
+}
+
 // Determine which command to run
 let result: AttestationResult;
+
+try {
 
 if (getFlag("--secretvm")) {
   const url = getFlagValue("--secretvm") ?? getPositional();
@@ -338,3 +355,8 @@ if (result.errors.length > 0) {
 
 console.log(`\n${result.valid ? "PASSED" : "FAILED"}`);
 process.exit(result.valid ? 0 : 1);
+
+} catch (err: any) {
+  console.error(`Error: ${formatError(err)}`);
+  process.exit(1);
+}
