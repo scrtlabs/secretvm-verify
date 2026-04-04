@@ -438,22 +438,28 @@ secretvm-verify yellow-krill.vm.scrtlabs.com
 Full usage:
 
 ```
-Usage: secretvm-verify <command> <value> [--product NAME] [--raw]
+Usage: secretvm-verify <command> <value> [--product NAME] [--raw] [--verbose|-v]
 
 Commands:
-  --secretvm <url>                        Verify a Secret VM (CPU + GPU + TLS binding)
-  --cpu <file>                            Verify a CPU quote (auto-detect TDX vs SEV-SNP)
-  --tdx <file>                            Verify an Intel TDX quote
-  --sev <file>                            Verify an AMD SEV-SNP report
-  --gpu <file>                            Verify an NVIDIA GPU attestation
-  --resolve-version <file>                Resolve SecretVM version from a TDX quote
-  --verify-workload <file> --compose <file>
-                                          Verify TDX workload against a docker-compose.yaml
+  --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
+  --cpu <file|--vm url>             Verify a CPU quote (auto-detect TDX vs SEV-SNP)
+  --tdx <file|--vm url>             Verify an Intel TDX quote
+  --sev <file|--vm url>             Verify an AMD SEV-SNP report
+  --gpu <file|--vm url>             Verify an NVIDIA GPU attestation
+  --resolve-version, -rv <file|--vm url>
+                                    Resolve SecretVM version from TDX or AMD SEV-SNP quote
+  --verify-workload, -vw <file|--vm url> [--compose <file>]
+                                    Verify workload against a docker-compose (fetched from VM if --vm)
+  --check-agent <id> --chain <name>
+                                    Resolve and verify an ERC-8004 agent on-chain
+  --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
 
 Options:
+  --vm <url>           Fetch quote from a VM instead of a file
+  --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin)
-  --compose <file>     docker-compose.yaml file (required with --verify-workload)
   --raw                Output raw JSON result
+  --verbose, -v        Print all attestation report fields
 ```
 
 ### Python CLI

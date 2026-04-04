@@ -109,7 +109,10 @@ Examples:
   secretvm-verify --cpu cpu_quote.txt --raw
   secretvm-verify -rv --vm blue-moose.vm.scrtlabs.com
   secretvm-verify -vw --vm blue-moose.vm.scrtlabs.com
-  secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml`;
+  secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
+  secretvm-verify --check-agent 38114 --chain base
+  secretvm-verify --check-agent 38114 --chain base -v
+  secretvm-verify --agent metadata.json`;
 
 function formatError(err: any): string {
   const cause = err?.cause;
