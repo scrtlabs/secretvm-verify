@@ -1,15 +1,13 @@
 """AMD SEV-SNP attestation verification."""
 
 import base64
+import datetime
 import struct
-import subprocess
-import tempfile
-from pathlib import Path
 
 import requests
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives import hashes
-from cryptography.x509 import load_der_x509_certificate
+from cryptography.x509 import load_der_x509_certificate, load_pem_x509_certificate
 
 from .types import AttestationResult
 
@@ -134,32 +132,53 @@ def _amd_split_pem(pem_data: bytes) -> list[bytes]:
     return blocks
 
 
-def _amd_verify_chain_openssl(vcek_der: bytes, chain_pem: bytes) -> bool:
-    with tempfile.TemporaryDirectory() as td:
-        vcek_pem_path = Path(td) / "vcek.pem"
-        r = subprocess.run(
-            ["openssl", "x509", "-inform", "DER", "-outform", "PEM"],
-            input=vcek_der, capture_output=True,
-        )
-        if r.returncode != 0:
-            raise RuntimeError(f"openssl x509 convert failed: {r.stderr.decode()}")
-        vcek_pem_path.write_bytes(r.stdout)
+def _amd_verify_one_cert(child, parent) -> bool:
+    """Verify that *child* was signed by *parent*, auto-detecting RSA-PSS vs ECDSA."""
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa as _rsa
+    pub = parent.public_key()
+    try:
+        if isinstance(pub, _rsa.RSAPublicKey):
+            pub.verify(
+                child.signature,
+                child.tbs_certificate_bytes,
+                padding.PSS(
+                    mgf=padding.MGF1(hashes.SHA384()),
+                    salt_length=padding.PSS.MAX_LENGTH,
+                ),
+                hashes.SHA384(),
+            )
+        else:
+            pub.verify(
+                child.signature,
+                child.tbs_certificate_bytes,
+                ec.ECDSA(hashes.SHA384()),
+            )
+        return True
+    except Exception:
+        return False
 
-        pem_blocks = _amd_split_pem(chain_pem)
-        if len(pem_blocks) < 2:
-            raise RuntimeError(f"Expected at least 2 certs in chain, got {len(pem_blocks)}")
 
-        ark_path = Path(td) / "ark.pem"
-        ask_path = Path(td) / "ask.pem"
-        ark_path.write_bytes(pem_blocks[1])
-        ask_path.write_bytes(pem_blocks[0])
+def _amd_verify_cert_chain(vcek_der: bytes, chain_pem: bytes) -> bool:
+    """Verify VCEK -> ASK -> ARK certificate chain using native crypto."""
+    pem_blocks = _amd_split_pem(chain_pem)
+    if len(pem_blocks) < 2:
+        return False
 
-        r = subprocess.run(
-            ["openssl", "verify", "-CAfile", str(ark_path),
-             "-untrusted", str(ask_path), str(vcek_pem_path)],
-            capture_output=True,
-        )
-        return r.returncode == 0
+    vcek = load_der_x509_certificate(vcek_der)
+    ask = load_pem_x509_certificate(pem_blocks[0])
+    ark = load_pem_x509_certificate(pem_blocks[1])
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for cert in [vcek, ask, ark]:
+        if now < cert.not_valid_before_utc or now > cert.not_valid_after_utc:
+            return False
+
+    # ARK is self-signed, ASK signed by ARK, VCEK signed by ASK
+    return (
+        _amd_verify_one_cert(ark, ark)
+        and _amd_verify_one_cert(ask, ark)
+        and _amd_verify_one_cert(vcek, ask)
+    )
 
 
 def _amd_verify_report_signature(rpt: dict, vcek_cert) -> bool:
@@ -224,7 +243,7 @@ def check_sev_cpu_attestation(data_or_url: str, product: str = "") -> Attestatio
     # Verify cert chain via openssl
     try:
         chain_pem = _amd_fetch_chain_pem(detected_product)
-        checks["cert_chain_valid"] = _amd_verify_chain_openssl(vcek_der, chain_pem)
+        checks["cert_chain_valid"] = _amd_verify_cert_chain(vcek_der, chain_pem)
         if not checks["cert_chain_valid"]:
             errors.append("Certificate chain verification failed (VCEK -> ASK -> ARK)")
     except Exception as e:

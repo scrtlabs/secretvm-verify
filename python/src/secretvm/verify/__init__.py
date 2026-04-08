@@ -33,7 +33,10 @@ from .cpu import check_cpu_attestation
 from .nvidia import check_nvidia_gpu_attestation
 
 # Secret VM
-from .vm import check_secret_vm, _parse_vm_url, _get_tls_cert_fingerprint, _extract_docker_compose
+# Public API
+from .vm import check_secret_vm
+# Internal imports needed for test mocking via _get_pkg() pattern in vm.py
+from .vm import _get_tls_cert_fingerprint, _extract_docker_compose  # noqa: F401
 
 # Workload verification
 from .workload import (
@@ -70,7 +73,6 @@ __all__ = [
     "check_nvidia_gpu_attestation",
     # VM
     "check_secret_vm",
-    "_parse_vm_url",
     # Workload
     "resolve_secretvm_version",
     "verify_tdx_workload",

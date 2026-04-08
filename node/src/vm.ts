@@ -1,9 +1,8 @@
-import crypto from "node:crypto";
-import tls from "node:tls";
 import { AttestationResult, makeResult } from "./types.js";
 import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
 import { verifyWorkload } from "./workload.js";
+import { extractDockerCompose, getTlsCertFingerprint } from "./url.js";
 
 const SECRET_VM_PORT = 29343;
 
@@ -11,27 +10,8 @@ const SECRET_VM_PORT = 29343;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Extract YAML from an HTML-wrapped response (the VM serves docker-compose inside a &lt;pre&gt; tag with HTML-encoded entities). */
-export function extractDockerCompose(raw: string): string {
-  let text = raw.trim();
-  // If wrapped in HTML, extract content from <pre>...</pre>
-  const preMatch = text.match(/<pre>([\s\S]*?)<\/pre>/i);
-  if (preMatch) {
-    text = preMatch[1]!;
-  }
-  // Decode HTML entities
-  text = text
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
-  // Strip zero-width spaces and other invisible Unicode characters
-  text = text.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
-  return text;
-}
+// Re-export for backwards compatibility
+export { extractDockerCompose };
 
 export function parseVmUrl(url: string): { host: string; port: number } {
   if (!url.includes("://")) url = `https://${url}`;
@@ -40,35 +20,6 @@ export function parseVmUrl(url: string): { host: string; port: number } {
     host: parsed.hostname,
     port: parsed.port ? Number(parsed.port) : SECRET_VM_PORT,
   };
-}
-
-function getTlsCertFingerprint(
-  host: string,
-  port: number,
-): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const socket = tls.connect(
-      { host, port, rejectUnauthorized: true },
-      () => {
-        const cert = socket.getPeerX509Certificate();
-        if (!cert) {
-          socket.destroy();
-          return reject(new Error("No certificate received"));
-        }
-        const fingerprint = crypto
-          .createHash("sha256")
-          .update(cert.raw)
-          .digest();
-        socket.destroy();
-        resolve(fingerprint);
-      },
-    );
-    socket.on("error", reject);
-    socket.setTimeout(10_000, () => {
-      socket.destroy();
-      reject(new Error("TLS connection timed out"));
-    });
-  });
 }
 
 // ---------------------------------------------------------------------------

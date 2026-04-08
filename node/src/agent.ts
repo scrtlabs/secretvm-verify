@@ -1,5 +1,3 @@
-import crypto from "node:crypto";
-import tls from "node:tls";
 import { ethers } from "ethers";
 import { getChainConfig, getRpcUrl } from "./chains.js";
 import { AttestationResult, makeResult } from "./types.js";
@@ -7,6 +5,7 @@ import type { AgentMetadata, AgentService } from "./types.js";
 import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
 import { verifyWorkload } from "./workload.js";
+import { extractDockerCompose, getTlsCertFingerprint } from "./url.js";
 
 const REGISTRY_ABI = [
   "function tokenURI(uint256 tokenId) view returns (string)",
@@ -30,51 +29,6 @@ function normalizeServices(raw: unknown): AgentService[] {
       description,
     };
   });
-}
-
-function getTlsCertFingerprint(
-  host: string,
-  port: number,
-): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const socket = tls.connect(
-      { host, port, rejectUnauthorized: true },
-      () => {
-        const cert = socket.getPeerX509Certificate();
-        if (!cert) {
-          socket.destroy();
-          return reject(new Error("No certificate received"));
-        }
-        const fingerprint = crypto
-          .createHash("sha256")
-          .update(cert.raw)
-          .digest();
-        socket.destroy();
-        resolve(fingerprint);
-      },
-    );
-    socket.on("error", reject);
-    socket.setTimeout(10_000, () => {
-      socket.destroy();
-      reject(new Error("TLS connection timed out"));
-    });
-  });
-}
-
-function extractDockerCompose(raw: string): string {
-  let text = raw.trim();
-  const preMatch = text.match(/<pre>([\s\S]*?)<\/pre>/i);
-  if (preMatch) text = preMatch[1]!;
-  text = text
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
-  text = text.replace(/[\u200B\u200C\u200D\uFEFF]/g, "");
-  return text;
 }
 
 function findTeequoteEndpoint(services: AgentService[]): string | undefined {

@@ -121,6 +121,11 @@ def _tdx_extract_pem_certs(pem_data: bytes) -> list:
 
 
 def _tdx_verify_cert_chain(certs: list) -> bool:
+    import datetime
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for cert in certs:
+        if now < cert.not_valid_before_utc or now > cert.not_valid_after_utc:
+            return False
     for i in range(len(certs) - 1):
         child, parent = certs[i], certs[i + 1]
         try:

@@ -45,7 +45,7 @@ def _calculate_rtmr3(docker_compose: str | bytes, rootfs_data: str) -> str:
     """
     compose_bytes = docker_compose if isinstance(docker_compose, bytes) else docker_compose.encode("utf-8")
     sha256_hex = hashlib.sha256(compose_bytes).hexdigest()
-    rootfs_hex = rootfs_data.lower().lstrip("0x")
+    rootfs_hex = rootfs_data.lower().removeprefix("0x")
     return _replay_rtmr([sha256_hex, rootfs_hex])
 
 
@@ -72,10 +72,10 @@ def _load_tdx_registry() -> list:
 
 
 def _find_matching_artifacts(mrtd: str, rtmr0: str, rtmr1: str, rtmr2: str) -> list:
-    m = mrtd.lower().lstrip("0x")
-    r0 = rtmr0.lower().lstrip("0x")
-    r1 = rtmr1.lower().lstrip("0x")
-    r2 = rtmr2.lower().lstrip("0x")
+    m = mrtd.lower().removeprefix("0x")
+    r0 = rtmr0.lower().removeprefix("0x")
+    r1 = rtmr1.lower().removeprefix("0x")
+    r2 = rtmr2.lower().removeprefix("0x")
     return [
         e for e in _load_tdx_registry()
         if e["mrtd"] == m and e["rtmr0"] == r0 and e["rtmr1"] == r1 and e["rtmr2"] == r2

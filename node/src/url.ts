@@ -1,3 +1,6 @@
+import crypto from "node:crypto";
+import tls from "node:tls";
+
 const SECRET_VM_PORT = 29343;
 
 /**
@@ -47,7 +50,36 @@ export async function fetchDockerCompose(url: string): Promise<string> {
   return extractDockerCompose(raw);
 }
 
-function extractDockerCompose(raw: string): string {
+export function getTlsCertFingerprint(
+  host: string,
+  port: number,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const socket = tls.connect(
+      { host, port, rejectUnauthorized: true },
+      () => {
+        const cert = socket.getPeerX509Certificate();
+        if (!cert) {
+          socket.destroy();
+          return reject(new Error("No certificate received"));
+        }
+        const fingerprint = crypto
+          .createHash("sha256")
+          .update(cert.raw)
+          .digest();
+        socket.destroy();
+        resolve(fingerprint);
+      },
+    );
+    socket.on("error", reject);
+    socket.setTimeout(10_000, () => {
+      socket.destroy();
+      reject(new Error("TLS connection timed out"));
+    });
+  });
+}
+
+export function extractDockerCompose(raw: string): string {
   let text = raw.trim();
   const preMatch = text.match(/<pre>([\s\S]*?)<\/pre>/i);
   if (preMatch) text = preMatch[1]!;

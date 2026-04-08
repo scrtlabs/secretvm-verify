@@ -321,7 +321,7 @@ class TestSecretVm:
         assert result.valid is False
 
     def test_url_parsing(self):
-        from secretvm.verify import _parse_vm_url
+        from secretvm.verify.vm import _parse_vm_url
 
         assert _parse_vm_url("myhost") == ("myhost", 29343)
         assert _parse_vm_url("myhost:1234") == ("myhost", 1234)

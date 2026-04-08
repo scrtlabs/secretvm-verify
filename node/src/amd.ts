@@ -1,8 +1,4 @@
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 import { AttestationResult, makeResult } from "./types.js";
 
@@ -176,48 +172,37 @@ function splitPem(pem: string): string[] {
   return blocks;
 }
 
-/** Verify VCEK → ASK → ARK chain using openssl CLI. */
-function verifyCertChainOpenssl(vcekDer: Buffer, chainPem: string): boolean {
-  const td = mkdtempSync(join(tmpdir(), "amd-"));
-  try {
-    // Convert VCEK DER to PEM
-    const vcekPem = execFileSync("openssl", [
-      "x509",
-      "-inform",
-      "DER",
-      "-outform",
-      "PEM",
-    ], { input: vcekDer }).toString();
-    const vcekPath = join(td, "vcek.pem");
-    writeFileSync(vcekPath, vcekPem);
+/** Verify VCEK → ASK → ARK certificate chain using Node's crypto module. */
+function verifyCertChain(vcekDer: Buffer, chainPem: string): boolean {
+  const blocks = splitPem(chainPem);
+  if (blocks.length < 2) {
+    return false;
+  }
 
-    const blocks = splitPem(chainPem);
-    if (blocks.length < 2) {
-      throw new Error(
-        `Expected at least 2 certs in chain, got ${blocks.length}`,
-      );
-    }
+  const vcek = new crypto.X509Certificate(vcekDer);
+  const ask = new crypto.X509Certificate(blocks[0]!);
+  const ark = new crypto.X509Certificate(blocks[1]!);
 
-    const askPath = join(td, "ask.pem");
-    const arkPath = join(td, "ark.pem");
-    writeFileSync(askPath, blocks[0]!);
-    writeFileSync(arkPath, blocks[1]!);
+  const now = new Date();
 
-    try {
-      execFileSync("openssl", [
-        "verify",
-        "-CAfile",
-        arkPath,
-        "-untrusted",
-        askPath,
-        vcekPath,
-      ]);
-      return true;
-    } catch {
+  // Check validity periods
+  for (const cert of [vcek, ask, ark]) {
+    if (now < new Date(cert.validFrom) || now > new Date(cert.validTo)) {
       return false;
     }
-  } finally {
-    rmSync(td, { recursive: true, force: true });
+  }
+
+  try {
+    // X509Certificate.verify() handles RSA-PSS and ECDSA automatically
+    // ARK is self-signed
+    if (!ark.verify(ark.publicKey)) return false;
+    // ASK signed by ARK
+    if (!ask.verify(ark.publicKey)) return false;
+    // VCEK signed by ASK
+    if (!vcek.verify(ask.publicKey)) return false;
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -297,7 +282,7 @@ export async function checkSevCpuAttestation(
   // Verify cert chain
   try {
     const chainPem = await fetchChainPem(detectedProduct);
-    checks.cert_chain_valid = verifyCertChainOpenssl(vcekDer, chainPem);
+    checks.cert_chain_valid = verifyCertChain(vcekDer, chainPem);
     if (!checks.cert_chain_valid) {
       errors.push(
         "Certificate chain verification failed (VCEK → ASK → ARK)",

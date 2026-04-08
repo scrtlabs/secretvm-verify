@@ -3,8 +3,7 @@ import { AttestationResult, makeResult } from "./types.js";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 
 const INTEL_PCS_BASE =
-    "https://pccs.scrtlabs.com/sgx/certification/v4";
-// "https://api.trustedservices.intel.com/sgx/certification/v4";
+    "https://api.trustedservices.intel.com/sgx/certification/v4";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,6 +88,14 @@ function extractPemCerts(pem: string): crypto.X509Certificate[] {
 }
 
 function verifyCertChain(certs: crypto.X509Certificate[]): boolean {
+  const now = new Date();
+  for (let i = 0; i < certs.length; i++) {
+    const cert = certs[i]!;
+    // Check certificate validity period
+    if (now < new Date(cert.validFrom) || now > new Date(cert.validTo)) {
+      return false;
+    }
+  }
   for (let i = 0; i < certs.length - 1; i++) {
     if (!certs[i]!.checkIssued(certs[i + 1]!)) return false;
     try {
@@ -181,6 +188,7 @@ export async function checkTdxCpuAttestation(
   }
 
   const td = q.td;
+  let fmspc: string | null = null;
 
   // Cert chain
   if (q.certDataType !== 5 && q.certDataType !== 6) {
@@ -234,7 +242,7 @@ export async function checkTdxCpuAttestation(
       }
 
       // FMSPC
-      var fmspc = extractFmspc(certs[0]!);
+      fmspc = extractFmspc(certs[0]!);
     }
   }
 
@@ -256,9 +264,9 @@ export async function checkTdxCpuAttestation(
 
   // TCB status
   let tcbStatus = "Unknown";
-  if (fmspc!) {
+  if (fmspc) {
     try {
-      tcbStatus = await fetchTcbStatus(fmspc!, td.teeTcbSvn);
+      tcbStatus = await fetchTcbStatus(fmspc, td.teeTcbSvn);
     } catch (e: any) {
       tcbStatus = `Could not fetch: ${e.message}`;
     }
@@ -291,7 +299,7 @@ export async function checkTdxCpuAttestation(
     report_data: td.reportData.toString("hex"),
     td_attributes: td.tdAttributes.toString("hex"),
     xfam: td.xfam.toString("hex"),
-    fmspc: fmspc! ?? "",
+    fmspc: fmspc ?? "",
     tcb_status: tcbStatus,
   };
 
