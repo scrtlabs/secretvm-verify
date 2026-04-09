@@ -1,5 +1,6 @@
 """NVIDIA GPU attestation verification."""
 
+import asyncio
 import base64
 import json
 
@@ -189,3 +190,15 @@ def check_nvidia_gpu_attestation(data_or_url: str) -> AttestationResult:
         valid=valid, attestation_type="NVIDIA-GPU",
         checks=checks, report=report, errors=errors,
     )
+
+
+async def check_nvidia_gpu_attestation_async(data_or_url: str) -> AttestationResult:
+    """Async variant of :func:`check_nvidia_gpu_attestation`.
+
+    Use this from inside an event loop. The NVIDIA GPU verification path uses
+    sync :mod:`requests` for NRAS submission and JWKS fetching, plus pure-CPU
+    JWT signature verification — no async-native operations to bridge — so
+    this implementation simply offloads the synchronous function to a thread
+    pool via :func:`asyncio.to_thread`.
+    """
+    return await asyncio.to_thread(check_nvidia_gpu_attestation, data_or_url)

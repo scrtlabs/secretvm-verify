@@ -1,6 +1,8 @@
 import crypto from "node:crypto";
+import { parseCrlRevokedSerials, normalizeSerialHex } from "@teekit/qvl/utils";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 import { AttestationResult, makeResult } from "./types.js";
+import * as kdsCache from "./kdsCache.js";
 
 const AMD_KDS_BASE = "https://kdsintf.amd.com";
 const REPORT_SIZE = 0x4a0;
@@ -126,6 +128,20 @@ function vcekUrl(product: string, chipId: Buffer, tcb: TcbVersion): string {
   );
 }
 
+/** Stable cache key for the VCEK fetch — includes the full TCB tuple
+ * because AMD issues a distinct VCEK per (chip, ucode, snp, tee, bl) level. */
+function vcekCacheKey(
+  product: string,
+  chipId: Buffer,
+  tcb: TcbVersion,
+): string {
+  return (
+    `${product}_${chipId.toString("hex")}` +
+    `_bl${tcb.bootLoader}_tee${tcb.tee}` +
+    `_snp${tcb.snp}_uc${tcb.microcode}`
+  );
+}
+
 async function fetchVcek(
   product: string,
   chipId: Buffer,
@@ -133,18 +149,37 @@ async function fetchVcek(
 ): Promise<{ der: Buffer; product: string }> {
   const candidates = product ? [product] : ["Genoa", "Milan", "Turin"];
   for (const name of candidates) {
+    const cacheKey = vcekCacheKey(name, chipId, reportedTcb);
+    const cached = kdsCache.get("vcek", cacheKey);
+    if (cached) {
+      return { der: cached, product: name };
+    }
     const url = vcekUrl(name, chipId, reportedTcb);
-    const resp = await fetch(url);
+    let resp: Response;
+    try {
+      resp = await fetch(url);
+    } catch (e) {
+      // Network failure: fall back to a stale cached entry if we have one.
+      const stale = kdsCache.getStale("vcek", cacheKey);
+      if (stale) return { der: stale, product: name };
+      throw e;
+    }
     if (resp.ok) {
       const der = Buffer.from(await resp.arrayBuffer());
+      kdsCache.put("vcek", cacheKey, der, kdsCache.TTL_VCEK_SECONDS);
       return { der, product: name };
     }
     if (resp.status === 429) {
+      // Last-ditch fallback: serve a stale cached entry rather than fail.
+      const stale = kdsCache.getStale("vcek", cacheKey);
+      if (stale) return { der: stale, product: name };
       throw new Error(
         "AMD KDS rate-limited (429). Retry later or specify product.",
       );
     }
     if (product) {
+      const stale = kdsCache.getStale("vcek", cacheKey);
+      if (stale) return { der: stale, product: name };
       throw new Error(`AMD KDS returned ${resp.status}`);
     }
   }
@@ -154,12 +189,62 @@ async function fetchVcek(
 }
 
 async function fetchChainPem(product: string): Promise<string> {
+  const cached = kdsCache.get("cert_chain", product);
+  if (cached) return cached.toString("utf8");
   const url = `${AMD_KDS_BASE}/vcek/v1/${product}/cert_chain`;
-  const resp = await fetch(url);
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (e) {
+    const stale = kdsCache.getStale("cert_chain", product);
+    if (stale) return stale.toString("utf8");
+    throw e;
+  }
   if (!resp.ok) {
+    const stale = kdsCache.getStale("cert_chain", product);
+    if (stale) return stale.toString("utf8");
     throw new Error(`AMD KDS cert_chain returned ${resp.status}`);
   }
-  return await resp.text();
+  const text = await resp.text();
+  kdsCache.put("cert_chain", product, Buffer.from(text, "utf8"), kdsCache.TTL_CHAIN_SECONDS);
+  return text;
+}
+
+/** Fetch the AMD VCEK CRL for a product, cache-first.
+ *
+ * The CRL is consulted to detect chips that AMD has revoked. We cache for
+ * 7 days, matching AMD's typical CRL `nextUpdate` window. On network failure
+ * we fall back to a stale cached entry rather than failing every SEV
+ * verification while KDS is down.
+ */
+async function fetchCrl(product: string): Promise<Buffer> {
+  const cached = kdsCache.get("crl", product);
+  if (cached) return cached;
+  const url = `${AMD_KDS_BASE}/vcek/v1/${product}/crl`;
+  let resp: Response;
+  try {
+    resp = await fetch(url);
+  } catch (e) {
+    const stale = kdsCache.getStale("crl", product);
+    if (stale) return stale;
+    throw e;
+  }
+  if (!resp.ok) {
+    const stale = kdsCache.getStale("crl", product);
+    if (stale) return stale;
+    throw new Error(`AMD KDS crl returned ${resp.status}`);
+  }
+  const der = Buffer.from(await resp.arrayBuffer());
+  kdsCache.put("crl", product, der, kdsCache.TTL_CRL_SECONDS);
+  return der;
+}
+
+/** Return true if the VCEK is NOT in the CRL (i.e. not revoked). */
+function checkVcekRevocation(vcekDer: Buffer, crlDer: Buffer): boolean {
+  const cert = new crypto.X509Certificate(vcekDer);
+  const vcekSerial = normalizeSerialHex(cert.serialNumber);
+  const revoked = new Set(parseCrlRevokedSerials(crlDer));
+  return !revoked.has(vcekSerial);
 }
 
 function splitPem(pem: string): string[] {
@@ -279,7 +364,7 @@ export async function checkSevCpuAttestation(
     return makeResult("SEV-SNP", { checks, errors });
   }
 
-  // Verify cert chain
+  // Verify cert chain (VCEK -> ASK -> ARK)
   try {
     const chainPem = await fetchChainPem(detectedProduct);
     checks.cert_chain_valid = verifyCertChain(vcekDer, chainPem);
@@ -293,6 +378,22 @@ export async function checkSevCpuAttestation(
     errors.push(`Failed to verify cert chain: ${e.message}`);
   }
 
+  // CRL revocation check — fetch the AMD VCEK CRL and confirm the leaf
+  // cert's serial number is not in the revoked list. Cached for 7 days.
+  try {
+    const crlDer = await fetchCrl(detectedProduct);
+    checks.crl_check_passed = checkVcekRevocation(vcekDer, crlDer);
+    if (!checks.crl_check_passed) {
+      const cert = new crypto.X509Certificate(vcekDer);
+      errors.push(
+        `VCEK serial ${cert.serialNumber} is revoked per AMD CRL`,
+      );
+    }
+  } catch (e: any) {
+    checks.crl_check_passed = false;
+    errors.push(`CRL revocation check failed: ${e.message}`);
+  }
+
   // Verify report signature
   checks.report_signature_valid = verifyReportSignature(rpt, vcekDer);
   if (!checks.report_signature_valid) {
@@ -303,6 +404,7 @@ export async function checkSevCpuAttestation(
     !!checks.report_parsed &&
     !!checks.vcek_fetched &&
     !!checks.cert_chain_valid &&
+    !!checks.crl_check_passed &&
     !!checks.report_signature_valid;
 
   const report: Record<string, any> = {

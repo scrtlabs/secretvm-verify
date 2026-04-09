@@ -1,5 +1,6 @@
 """Secret VM end-to-end verification (CPU + GPU + binding checks)."""
 
+import asyncio
 import hashlib
 import json
 import ssl
@@ -218,3 +219,16 @@ def check_secret_vm(url: str, product: str = "") -> AttestationResult:
         valid=valid, attestation_type="SECRET-VM",
         checks=checks, report=report, errors=errors,
     )
+
+
+async def check_secret_vm_async(url: str, product: str = "") -> AttestationResult:
+    """Async variant of :func:`check_secret_vm`.
+
+    Use this from inside an event loop. The current implementation offloads
+    the synchronous wrapper to a thread pool via :func:`asyncio.to_thread`,
+    so the event loop is not blocked while the TLS, CPU, GPU, and workload
+    fetches run sequentially in the worker thread. A future refactor could
+    parallelize the four fetches for additional speedup, but the simple
+    wrapper is sufficient to use the API from async contexts today.
+    """
+    return await asyncio.to_thread(check_secret_vm, url, product)

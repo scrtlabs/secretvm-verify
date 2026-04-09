@@ -1,5 +1,6 @@
 """ERC-8004 agent verification."""
 
+import asyncio
 import base64
 import json
 from typing import Optional
@@ -416,3 +417,22 @@ def check_agent(agent_id: int, chain: str) -> AttestationResult:
     result = verify_agent(metadata)
     result.checks = {"agent_resolved": True, **result.checks}
     return result
+
+
+async def verify_agent_async(metadata: AgentMetadata) -> AttestationResult:
+    """Async variant of :func:`verify_agent`.
+
+    Use this from inside an event loop. The current implementation offloads
+    the synchronous wrapper to a thread pool via :func:`asyncio.to_thread`.
+    """
+    return await asyncio.to_thread(verify_agent, metadata)
+
+
+async def check_agent_async(agent_id: int, chain: str) -> AttestationResult:
+    """Async variant of :func:`check_agent`.
+
+    Use this from inside an event loop. The current implementation offloads
+    the synchronous wrapper (on-chain resolution + TEE verification) to a
+    thread pool via :func:`asyncio.to_thread`.
+    """
+    return await asyncio.to_thread(check_agent, agent_id, chain)

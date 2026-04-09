@@ -36,6 +36,11 @@ const raw = getFlag("--raw");
 const verbose = getFlag("--verbose") || getFlag("-v");
 const product = getFlagValue("--product") ?? "";
 const vmUrl = getFlagValue("--vm");
+// `--secretvm` defaults to a terse output (verdict + errors only). Use
+// `--verbose` (or `-v`) to also show the per-check breakdown and report
+// fields. Other modes (--cpu, --tdx, --sev, --gpu, etc.) keep their
+// detailed default output.
+const isSecretvm = getFlag("--secretvm");
 
 const SECRET_VM_PORT = 29343;
 
@@ -315,6 +320,13 @@ if (verdict !== null) {
   console.log(`${icon} Attestation verified: ${label}\n`);
 }
 
+// The per-check PASS/FAIL breakdown is always shown. The report-field
+// details (CPU/TLS/RTMR/TCB/GPU specifics) are hidden in `--secretvm` mode
+// without `--verbose`. Other modes (--cpu, --tdx, --sev, --gpu,
+// --check-agent, etc.) always show the report fields.
+const showReportFields = !isSecretvm || verbose;
+const report = result.report;
+
 console.log("Checks:");
 for (const [name, passed] of Object.entries(result.checks)) {
   if (name === "gpu_quote_fetched" && !passed) {
@@ -325,35 +337,35 @@ for (const [name, passed] of Object.entries(result.checks)) {
   console.log(`  ${(name + ":").padEnd(35)} ${status}`);
 }
 
-const report = result.report;
+if (showReportFields) {
+  // Secret VM specific fields
+  if (report.cpu_type) console.log(`\nCPU type: ${report.cpu_type}`);
+  if (report.tls_fingerprint) console.log(`TLS fingerprint: ${report.tls_fingerprint}`);
 
-// Secret VM specific fields
-if (report.cpu_type) console.log(`\nCPU type: ${report.cpu_type}`);
-if (report.tls_fingerprint) console.log(`TLS fingerprint: ${report.tls_fingerprint}`);
+  // CPU fields (direct or nested under cpu)
+  const cpu = report.cpu ?? report;
+  if (cpu.report_data) console.log(`Report data: ${cpu.report_data}`);
+  if (cpu.measurement) console.log(`Measurement: ${cpu.measurement}`);
+  if (cpu.mr_td) console.log(`MR TD:  ${cpu.mr_td}`);
+  if (cpu.rt_mr0) console.log(`RTMR0:  ${cpu.rt_mr0}`);
+  if (cpu.rt_mr1) console.log(`RTMR1:  ${cpu.rt_mr1}`);
+  if (cpu.rt_mr2) console.log(`RTMR2:  ${cpu.rt_mr2}`);
+  if (cpu.rt_mr3) console.log(`RTMR3:  ${cpu.rt_mr3}`);
+  if (cpu.tcb_status) console.log(`TCB status: ${cpu.tcb_status}`);
+  if (cpu.product) console.log(`AMD product: ${cpu.product}`);
+  if (cpu.chip_id) console.log(`Chip ID: ${cpu.chip_id}`);
+  if (cpu.fmspc) console.log(`FMSPC: ${cpu.fmspc}`);
 
-// CPU fields (direct or nested under cpu)
-const cpu = report.cpu ?? report;
-if (cpu.report_data) console.log(`Report data: ${cpu.report_data}`);
-if (cpu.measurement) console.log(`Measurement: ${cpu.measurement}`);
-if (cpu.mr_td) console.log(`MR TD:  ${cpu.mr_td}`);
-if (cpu.rt_mr0) console.log(`RTMR0:  ${cpu.rt_mr0}`);
-if (cpu.rt_mr1) console.log(`RTMR1:  ${cpu.rt_mr1}`);
-if (cpu.rt_mr2) console.log(`RTMR2:  ${cpu.rt_mr2}`);
-if (cpu.rt_mr3) console.log(`RTMR3:  ${cpu.rt_mr3}`);
-if (cpu.tcb_status) console.log(`TCB status: ${cpu.tcb_status}`);
-if (cpu.product) console.log(`AMD product: ${cpu.product}`);
-if (cpu.chip_id) console.log(`Chip ID: ${cpu.chip_id}`);
-if (cpu.fmspc) console.log(`FMSPC: ${cpu.fmspc}`);
-
-// GPU fields (direct or nested under gpu)
-const gpu = report.gpu ?? report;
-if (gpu.overall_result !== undefined) console.log(`\nGPU overall result: ${gpu.overall_result}`);
-if (gpu.gpus) {
-  for (const [gpuId, info] of Object.entries<any>(gpu.gpus)) {
-    console.log(`\n${gpuId}:`);
-    console.log(`  Model: ${info.model}`);
-    console.log(`  Driver: ${info.driver_version}`);
-    console.log(`  Secure boot: ${info.secure_boot}`);
+  // GPU fields (direct or nested under gpu)
+  const gpu = report.gpu ?? report;
+  if (gpu.overall_result !== undefined) console.log(`\nGPU overall result: ${gpu.overall_result}`);
+  if (gpu.gpus) {
+    for (const [gpuId, info] of Object.entries<any>(gpu.gpus)) {
+      console.log(`\n${gpuId}:`);
+      console.log(`  Model: ${info.model}`);
+      console.log(`  Driver: ${info.driver_version}`);
+      console.log(`  Secure boot: ${info.secure_boot}`);
+    }
   }
 }
 

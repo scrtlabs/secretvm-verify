@@ -9,8 +9,10 @@ from secretvm.verify import check_secret_vm
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <url> [--product NAME]")
+        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--raw] [--verbose|-v]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
+        print(f"  Default output is the verdict only; use --verbose for the per-check")
+        print(f"  breakdown and report field details.")
         sys.exit(1)
 
     url = sys.argv[1]
@@ -21,6 +23,7 @@ def main():
             product = sys.argv[idx + 1]
 
     raw = "--raw" in sys.argv
+    verbose = "--verbose" in sys.argv or "-v" in sys.argv
 
     if not raw:
         print(f"Checking attestation for {url} ...\n")
@@ -47,7 +50,9 @@ def main():
         icon = "✅" if verdict else "🚫"
         print(f"{icon} Attestation verified: {label}\n")
 
-    # Checks
+    # The per-check PASS/FAIL breakdown is always shown. The report-field
+    # highlights (CPU/TLS/RTMR/TCB/GPU/workload specifics) are gated behind
+    # --verbose to keep the default output focused on the verdict.
     print("Checks:")
     for name, passed in result.checks.items():
         if name == "gpu_quote_fetched" and not passed:
@@ -56,50 +61,51 @@ def main():
         status = "PASS" if passed else "FAIL"
         print(f"  {name + ':':<35} {status}")
 
-    # Report highlights
-    report = result.report
-    if report.get("cpu_type"):
-        print(f"\nCPU type: {report['cpu_type']}")
-    if report.get("tls_fingerprint"):
-        print(f"TLS fingerprint: {report['tls_fingerprint']}")
+    if verbose:
+        # Report highlights
+        report = result.report
+        if report.get("cpu_type"):
+            print(f"\nCPU type: {report['cpu_type']}")
+        if report.get("tls_fingerprint"):
+            print(f"TLS fingerprint: {report['tls_fingerprint']}")
 
-    cpu = report.get("cpu", {})
-    if cpu.get("report_data"):
-        print(f"Report data: {cpu['report_data']}")
-    if cpu.get("measurement"):
-        print(f"Measurement: {cpu['measurement']}")
-    if cpu.get("mr_td"):
-        print(f"MR TD:  {cpu['mr_td']}")
-    if cpu.get("rt_mr0"):
-        print(f"RTMR0:  {cpu['rt_mr0']}")
-    if cpu.get("rt_mr1"):
-        print(f"RTMR1:  {cpu['rt_mr1']}")
-    if cpu.get("rt_mr2"):
-        print(f"RTMR2:  {cpu['rt_mr2']}")
-    if cpu.get("rt_mr3"):
-        print(f"RTMR3:  {cpu['rt_mr3']}")
-    if cpu.get("tcb_status"):
-        print(f"TCB status: {cpu['tcb_status']}")
-    if cpu.get("product"):
-        print(f"AMD product: {cpu['product']}")
+        cpu = report.get("cpu", {})
+        if cpu.get("report_data"):
+            print(f"Report data: {cpu['report_data']}")
+        if cpu.get("measurement"):
+            print(f"Measurement: {cpu['measurement']}")
+        if cpu.get("mr_td"):
+            print(f"MR TD:  {cpu['mr_td']}")
+        if cpu.get("rt_mr0"):
+            print(f"RTMR0:  {cpu['rt_mr0']}")
+        if cpu.get("rt_mr1"):
+            print(f"RTMR1:  {cpu['rt_mr1']}")
+        if cpu.get("rt_mr2"):
+            print(f"RTMR2:  {cpu['rt_mr2']}")
+        if cpu.get("rt_mr3"):
+            print(f"RTMR3:  {cpu['rt_mr3']}")
+        if cpu.get("tcb_status"):
+            print(f"TCB status: {cpu['tcb_status']}")
+        if cpu.get("product"):
+            print(f"AMD product: {cpu['product']}")
 
-    gpu = report.get("gpu", {})
-    if gpu.get("gpus"):
-        for gpu_id, info in gpu["gpus"].items():
-            print(f"\n{gpu_id}:")
-            print(f"  Model: {info.get('model')}")
-            print(f"  Driver: {info.get('driver_version')}")
-            print(f"  Secure boot: {info.get('secure_boot')}")
+        gpu = report.get("gpu", {})
+        if gpu.get("gpus"):
+            for gpu_id, info in gpu["gpus"].items():
+                print(f"\n{gpu_id}:")
+                print(f"  Model: {info.get('model')}")
+                print(f"  Driver: {info.get('driver_version')}")
+                print(f"  Secure boot: {info.get('secure_boot')}")
 
-    workload = report.get("workload", {})
-    if workload:
-        print(f"\nWorkload status: {workload.get('status')}")
-        if workload.get("template_name"):
-            print(f"Template: {workload['template_name']}")
-        if workload.get("artifacts_ver"):
-            print(f"Version: {workload['artifacts_ver']}")
-        if workload.get("env"):
-            print(f"Environment: {workload['env']}")
+        workload = report.get("workload", {})
+        if workload:
+            print(f"\nWorkload status: {workload.get('status')}")
+            if workload.get("template_name"):
+                print(f"Template: {workload['template_name']}")
+            if workload.get("artifacts_ver"):
+                print(f"Version: {workload['artifacts_ver']}")
+            if workload.get("env"):
+                print(f"Environment: {workload['env']}")
 
     # Errors
     if result.errors:
