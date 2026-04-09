@@ -13,3 +13,13 @@ build/
 node/cdocker.txt
 node/cquote.txt
 node/test.js
+
+# Live-VM session artifacts (fetched quotes, attestations, collateral dumps).
+# Hyphen-separated patterns are deliberately distinct from the underscore-named
+# test fixtures in test-data/ (e.g. cpu_quote.txt) so the test data is unaffected.
+*-quote.txt
+*-gpu.txt
+*-docker-compose.yaml
+intel_tcb_*
+nras_response*
+Intel_SGX_*.pem
