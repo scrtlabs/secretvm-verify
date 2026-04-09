@@ -14,9 +14,19 @@
   "bin": {
     "secretvm-verify": "dist/cli.js"
   },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.js.map",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts",
+    "!dist/**/*.test.js.map",
+    "data/"
+  ],
   "scripts": {
     "prebuild": "cp ../artifacts_registry/tdx.csv data/tdx.csv && cp ../artifacts_registry/sev.json data/sev.json",
     "build": "tsc",
+    "postbuild": "chmod +x dist/cli.js",
     "test": "node --test dist/**/*.test.js",
     "prepublishOnly": "npm run build"
   },
@@ -30,6 +40,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@teekit/qvl": "^0.0.4",
     "ethers": "^6.16.0"
   },
   "devDependencies": {

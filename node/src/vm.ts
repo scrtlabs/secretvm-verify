@@ -71,6 +71,12 @@ export async function checkSecretVm(
 
   const cpuResult = await checkCpuAttestation(cpuData, product);
   checks.cpu_attestation_valid = cpuResult.valid;
+  // Propagate the inner DCAP/QVL verification verdict so callers (and the CLI)
+  // can surface it prominently. Only TDX currently uses QVL; SEV results don't
+  // populate this key.
+  if (cpuResult.checks.quote_verified !== undefined) {
+    checks.cpu_quote_verified = cpuResult.checks.quote_verified;
+  }
   report.cpu = cpuResult.report;
   report.cpu_type = cpuResult.attestationType;
   if (!cpuResult.valid) {

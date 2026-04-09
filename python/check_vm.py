@@ -30,6 +30,23 @@ def main():
         print(json.dumps(asdict(result), indent=2))
         sys.exit(0 if result.valid else 1)
 
+    # Prominent top-level cryptographic attestation verdict.
+    # Prefer the dcap-qvl `quote_verified` signal (direct CPU/TDX call), or
+    # its propagated form `cpu_quote_verified` from a wrapper (check_secret_vm,
+    # verify_agent). Fall back to other CPU verdict signals so this line works
+    # across all attestation types.
+    c = result.checks
+    verdict = None
+    for key in ("quote_verified", "cpu_quote_verified",
+                "report_signature_valid", "cpu_attestation_valid"):
+        if key in c:
+            verdict = bool(c[key])
+            break
+    if verdict is not None:
+        label = "PASS" if verdict else "FAIL"
+        icon = "✅" if verdict else "🚫"
+        print(f"{icon} Attestation verified: {label}\n")
+
     # Checks
     print("Checks:")
     for name, passed in result.checks.items():
@@ -52,7 +69,15 @@ def main():
     if cpu.get("measurement"):
         print(f"Measurement: {cpu['measurement']}")
     if cpu.get("mr_td"):
-        print(f"MR TD: {cpu['mr_td']}")
+        print(f"MR TD:  {cpu['mr_td']}")
+    if cpu.get("rt_mr0"):
+        print(f"RTMR0:  {cpu['rt_mr0']}")
+    if cpu.get("rt_mr1"):
+        print(f"RTMR1:  {cpu['rt_mr1']}")
+    if cpu.get("rt_mr2"):
+        print(f"RTMR2:  {cpu['rt_mr2']}")
+    if cpu.get("rt_mr3"):
+        print(f"RTMR3:  {cpu['rt_mr3']}")
     if cpu.get("tcb_status"):
         print(f"TCB status: {cpu['tcb_status']}")
     if cpu.get("product"):

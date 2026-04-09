@@ -4,7 +4,7 @@ Attestation verification SDK for confidential computing environments. Verifies I
 
 ## What it verifies
 
-- **Intel TDX** — Parses a TDX Quote v4, verifies the ECDSA-P256 signature chain (PCK -> Intermediate -> Root), validates QE report binding, and checks TCB status against Intel's Provisioning Certification Service.
+- **Intel TDX** — Performs full Intel DCAP quote verification, delegating the cryptographic checks to the upstream [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) library. Verifies the PCK certificate chain against a pinned Intel SGX Root CA, the QE Identity, PCK CRL and Root CA CRL revocation, the TCB Info signature, the TCB status, the quote signature, and the QE report binding. Collateral (TCB Info, QE Identity, CRLs, issuer chains) is fetched from a Provisioning Certificate Caching Service (PCCS) — defaults to SCRT Labs' deployment. A sync entry point (`check_tdx_cpu_attestation`) and an async entry point (`check_tdx_cpu_attestation_async`) are both exposed; use the async variant from inside an event loop.
 - **AMD SEV-SNP** — Parses a SEV-SNP attestation report, fetches the VCEK certificate from AMD's Key Distribution Service, verifies the ECDSA-P384 report signature, and validates the certificate chain (VCEK -> ASK -> ARK).
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX or SEV-SNP quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image and verifies the exact compose file that was booted.
@@ -247,7 +247,7 @@ The library contacts these services during verification:
 
 | Service | Used by | Purpose |
 |---------|---------|---------|
-| [Intel PCS](https://api.trustedservices.intel.com) | TDX | TCB status lookup |
+| [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains) |
 | [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate and cert chain |
 | [NVIDIA NRAS](https://nras.attestation.nvidia.com) | GPU | GPU attestation verification |
 
@@ -256,8 +256,9 @@ The library contacts these services during verification:
 ## Requirements
 
 - Python >= 3.10
-- `requests`, `cryptography`, `PyYAML`, `web3`
-- `openssl` CLI (required for AMD SEV-SNP certificate chain verification)
+- `requests`, `cryptography`, `PyYAML`, `web3`, [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) (TDX quote verification)
+
+No system-level dependencies. AMD SEV-SNP certificate chains (RSA-PSS) are verified natively via `cryptography`.
 
 ## License
 

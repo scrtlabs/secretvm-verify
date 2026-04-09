@@ -223,6 +223,10 @@ export async function verifyAgent(
 
   const cpuResult = await checkCpuAttestation(cpuData);
   checks.cpu_attestation_valid = cpuResult.valid;
+  // Propagate the inner DCAP/QVL verification verdict for prominent display.
+  if (cpuResult.checks.quote_verified !== undefined) {
+    checks.cpu_quote_verified = cpuResult.checks.quote_verified;
+  }
   report.cpu = cpuResult.report;
   report.cpu_type = cpuResult.attestationType;
   if (!cpuResult.valid) errors.push(...cpuResult.errors);

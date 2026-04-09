@@ -115,6 +115,11 @@ def check_secret_vm(url: str, product: str = "") -> AttestationResult:
 
     cpu_result = pkg.check_cpu_attestation(cpu_data, product=product)
     checks["cpu_attestation_valid"] = cpu_result.valid
+    # Propagate the inner DCAP/QVL verification verdict so callers (and the CLI)
+    # can surface it prominently. Only TDX currently uses dcap-qvl; SEV results
+    # don't populate this key.
+    if "quote_verified" in cpu_result.checks:
+        checks["cpu_quote_verified"] = cpu_result.checks["quote_verified"]
     report["cpu"] = cpu_result.report
     report["cpu_type"] = cpu_result.attestation_type
     if not cpu_result.valid:

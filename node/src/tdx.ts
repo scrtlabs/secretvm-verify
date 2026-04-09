@@ -1,165 +1,178 @@
-import crypto from "node:crypto";
+/**
+ * Intel TDX attestation verification.
+ *
+ * Cryptographic verification (PCK chain, QE Identity, CRLs, TCB Info, quote
+ * signature) is delegated to the upstream `@teekit/qvl` library, which
+ * implements the full Intel DCAP quote verification flow against a pinned
+ * Intel SGX Root CA. This module's job is to assemble the collateral
+ * (CRLs + TCB lookup callback) from PCCS, parse the quote so we can populate
+ * report fields, and hand off to teekit/qvl for the actual crypto.
+ */
+
+import { verifyTdx, getTcbStatus, isTcbInfoFresh } from "@teekit/qvl";
 import { AttestationResult, makeResult } from "./types.js";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 
-const INTEL_PCS_BASE =
-    "https://api.trustedservices.intel.com/sgx/certification/v4";
+const PCCS_HOST = "https://pccs.scrtlabs.com";
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Collateral fetching helpers
 // ---------------------------------------------------------------------------
 
-function readU16LE(buf: Buffer, off: number): number {
-  return buf.readUInt16LE(off);
-}
-
-function readU32LE(buf: Buffer, off: number): number {
-  return buf.readUInt32LE(off);
-}
-
-/** Verify ECDSA-P256-SHA256 with raw 64-byte pubkey and 64-byte R||S sig. */
-function verifyEcdsaP256(
-  pubKeyRaw: Buffer,
-  message: Buffer,
-  sigRaw: Buffer,
-): boolean {
-  // Build uncompressed point: 0x04 || X(32) || Y(32)
-  const uncompressed = Buffer.concat([Buffer.from([0x04]), pubKeyRaw]);
-  const key = crypto.createPublicKey({
-    key: Buffer.concat([
-      // DER header for EC P-256 uncompressed point
-      Buffer.from(
-        "3059301306072a8648ce3d020106082a8648ce3d030107034200",
-        "hex",
-      ),
-      uncompressed,
-    ]),
-    format: "der",
-    type: "spki",
-  });
-
-  // Convert R||S to DER signature
-  const r = sigRaw.subarray(0, 32);
-  const s = sigRaw.subarray(32, 64);
-  const derSig = ecdsaRsToDer(r, s);
-
-  const verifier = crypto.createVerify("SHA256");
-  verifier.update(message);
+/**
+ * Decode hex-ASCII to raw bytes if `b` looks like hex-encoded ASN.1 DER.
+ *
+ * The SCRT PCCS deployment returns CRLs as hex-encoded ASCII (e.g.
+ * b'30820122...') instead of raw DER. teekit/qvl reads the body as raw bytes
+ * and chokes on the unexpected encoding. This helper detects hex-ASCII and
+ * decodes it. Other PCCS deployments return raw DER, in which case the
+ * decode either fails or doesn't begin with an ASN.1 SEQUENCE tag, and we
+ * pass the bytes through unchanged.
+ */
+function maybeDehex(b: Uint8Array): Uint8Array {
+  if (b.length % 2 !== 0) return b;
   try {
-    return verifier.verify({ key, dsaEncoding: "der" }, derSig);
+    const text = Buffer.from(b).toString("ascii");
+    if (!/^[0-9a-fA-F]+$/.test(text)) return b;
+    const decoded = Buffer.from(text, "hex");
+    if (decoded.length > 0 && decoded[0] === 0x30) return decoded;
   } catch {
-    return false;
+    /* fall through */
   }
+  return b;
 }
 
-/** Convert raw R, S buffers to DER-encoded ECDSA signature. */
-function ecdsaRsToDer(r: Buffer, s: Buffer): Buffer {
-  function encodeInt(v: Buffer): Buffer {
-    // Strip leading zeros but keep one if high bit set
-    let i = 0;
-    while (i < v.length - 1 && v[i] === 0) i++;
-    let trimmed = v.subarray(i);
-    if (trimmed[0]! & 0x80) {
-      trimmed = Buffer.concat([Buffer.from([0x00]), trimmed]);
-    }
-    return Buffer.concat([Buffer.from([0x02, trimmed.length]), trimmed]);
-  }
-  const ri = encodeInt(r);
-  const si = encodeInt(s);
-  return Buffer.concat([
-    Buffer.from([0x30, ri.length + si.length]),
-    ri,
-    si,
-  ]);
+/** Fetch the three CRLs needed for full PCK chain revocation checks. */
+async function fetchCrls(host: string): Promise<Uint8Array[]> {
+  const urls = [
+    `${host}/sgx/certification/v4/pckcrl?ca=processor`,
+    `${host}/sgx/certification/v4/pckcrl?ca=platform`,
+    `${host}/sgx/certification/v4/rootcacrl`,
+  ];
+  const results = await Promise.all(
+    urls.map(async (url) => {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(`PCCS ${url} returned ${resp.status}`);
+      }
+      const buf = new Uint8Array(await resp.arrayBuffer());
+      return maybeDehex(buf);
+    }),
+  );
+  return results;
 }
 
-// ---------------------------------------------------------------------------
-// PEM cert helpers
-// ---------------------------------------------------------------------------
-
-function extractPemCerts(pem: string): crypto.X509Certificate[] {
-  const certs: crypto.X509Certificate[] = [];
-  const re = /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(pem)) !== null) {
-    certs.push(new crypto.X509Certificate(m[0]));
-  }
-  return certs;
+/** Captured TCB info — populated by the verifyTcb callback during verification. */
+interface TcbCapture {
+  status: string;
+  advisoryIds: string[];
+  fresh: boolean;
 }
 
-function verifyCertChain(certs: crypto.X509Certificate[]): boolean {
-  const now = new Date();
-  for (let i = 0; i < certs.length; i++) {
-    const cert = certs[i]!;
-    // Check certificate validity period
-    if (now < new Date(cert.validFrom) || now > new Date(cert.validTo)) {
-      return false;
+/**
+ * Build a verifyTcb callback that hits the supplied PCCS host, derives the
+ * TCB status using teekit's helper, and captures the result for inclusion in
+ * the AttestationResult report.
+ */
+function makeVerifyTcbCallback(host: string, capture: TcbCapture) {
+  return async ({
+    fmspc,
+    cpuSvn,
+    pceSvn,
+    quote,
+  }: {
+    fmspc: string;
+    cpuSvn: number[];
+    pceSvn: number;
+    quote: any;
+  }): Promise<boolean> => {
+    const isTdx = quote?.header?.tee_type === 0x81;
+    const path = isTdx ? "tdx" : "sgx";
+    const url = `${host}/${path}/certification/v4/tcb?fmspc=${fmspc}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error(`PCCS ${url} returned ${resp.status}`);
     }
-  }
-  for (let i = 0; i < certs.length - 1; i++) {
-    if (!certs[i]!.checkIssued(certs[i + 1]!)) return false;
-    try {
-      if (!certs[i]!.verify(certs[i + 1]!.publicKey)) return false;
-    } catch {
-      return false;
-    }
-  }
-  if (certs.length > 0) {
-    const root = certs[certs.length - 1]!;
-    try {
-      if (!root.verify(root.publicKey)) return false;
-    } catch {
-      return false;
-    }
-  }
-  return true;
-}
-
-function extractFmspc(cert: crypto.X509Certificate): string | null {
-  // Parse the raw DER to find FMSPC OID 1.2.840.113741.1.13.1.4
-  const raw = Buffer.from(cert.raw);
-  const fmspcOid = Buffer.from("060a2a864886f84d010d0104", "hex");
-  const idx = raw.indexOf(fmspcOid);
-  if (idx < 0) return null;
-  const searchStart = idx + fmspcOid.length;
-  for (let j = searchStart; j < Math.min(searchStart + 20, raw.length - 6); j++) {
-    if (raw[j] === 0x04 && raw[j + 1] === 0x06) {
-      return raw.subarray(j + 2, j + 8).toString("hex");
-    }
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// TCB status
-// ---------------------------------------------------------------------------
-
-async function fetchTcbStatus(
-  fmspc: string,
-  teeTcbSvn: Buffer,
-): Promise<string> {
-  const url = `${INTEL_PCS_BASE}/tcb?fmspc=${fmspc}&type=TDX`;
-  const resp = await fetch(url);
-  if (!resp.ok) return `PCS returned ${resp.status}`;
-  const body = (await resp.json()) as any;
-  const tcbInfo = body.tcbInfo ?? body;
-  for (const level of tcbInfo.tcbLevels ?? []) {
-    const tdxComponents: { svn: number }[] =
-      level.tcb?.tdxtcbcomponents ?? [];
-    let match = true;
-    for (let i = 0; i < tdxComponents.length; i++) {
-      if (i < teeTcbSvn.length && teeTcbSvn[i]! < (tdxComponents[i]?.svn ?? 0)) {
-        match = false;
+    const tcbInfo = (await resp.json()) as any;
+    const status = getTcbStatus(tcbInfo, cpuSvn, pceSvn, isTdx);
+    const fresh = isTcbInfoFresh(tcbInfo, Date.now());
+    capture.status = status;
+    capture.fresh = fresh;
+    // Walk the levels to find the matching one and pull its advisoryIDs
+    for (const level of tcbInfo.tcbInfo?.tcbLevels ?? []) {
+      const components: { svn: number }[] = isTdx
+        ? level.tcb?.tdxtcbcomponents ?? []
+        : level.tcb?.sgxtcbcomponents ?? [];
+      let match = true;
+      for (let i = 0; i < components.length; i++) {
+        if (i < cpuSvn.length && cpuSvn[i]! < (components[i]?.svn ?? 0)) {
+          match = false;
+          break;
+        }
+      }
+      if (match && (level.tcb?.pcesvn === undefined || pceSvn >= level.tcb.pcesvn)) {
+        capture.advisoryIds = level.advisoryIDs ?? [];
         break;
       }
     }
-    if (match) {
-      const status: string = level.tcbStatus ?? "Unknown";
-      const date: string = level.tcbDate ?? "";
-      return date ? `${status} (as of ${date})` : status;
-    }
+    return (
+      fresh && (status === "UpToDate" || status === "ConfigurationNeeded")
+    );
+  };
+}
+
+/**
+ * Run full DCAP-grade quote verification via @teekit/qvl. Throws on any
+ * cryptographic failure with a descriptive error message; returns the
+ * captured TCB status / advisory IDs on success.
+ */
+async function qvlVerifyTdx(
+  rawQuote: Uint8Array,
+): Promise<TcbCapture> {
+  const crls = await fetchCrls(PCCS_HOST);
+  const capture: TcbCapture = {
+    status: "Unknown",
+    advisoryIds: [],
+    fresh: false,
+  };
+  const config = {
+    crls,
+    verifyTcb: makeVerifyTcbCallback(PCCS_HOST, capture),
+    verifyMeasurements: () => true, // accept any measurements — caller checks separately
+  };
+  const ok = await verifyTdx(rawQuote, config);
+  if (!ok) {
+    // verifyTdx returns false (rather than throws) only when verifyTcb rejects
+    throw new Error(
+      `TCB rejected: status=${capture.status}, fresh=${capture.fresh}`,
+    );
   }
-  return "OutOfDate (no matching TCB level found)";
+  return capture;
+}
+
+// ---------------------------------------------------------------------------
+// FMSPC extraction (used to populate report.fmspc)
+// ---------------------------------------------------------------------------
+
+import nodeCrypto from "node:crypto";
+
+function extractFmspc(certPem: string): string | null {
+  try {
+    const cert = new nodeCrypto.X509Certificate(certPem);
+    const raw = Buffer.from(cert.raw);
+    const fmspcOid = Buffer.from("060a2a864886f84d010d0104", "hex");
+    const idx = raw.indexOf(fmspcOid);
+    if (idx < 0) return null;
+    const searchStart = idx + fmspcOid.length;
+    for (let j = searchStart; j < Math.min(searchStart + 20, raw.length - 6); j++) {
+      if (raw[j] === 0x04 && raw[j + 1] === 0x06) {
+        return raw.subarray(j + 2, j + 8).toString("hex");
+      }
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +186,7 @@ export async function checkTdxCpuAttestation(
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
 
-  // Parse
+  // Parse — needed to populate report fields and extract fmspc
   let raw: Buffer;
   let q: ReturnType<typeof parseQuote>;
   try {
@@ -188,96 +201,31 @@ export async function checkTdxCpuAttestation(
   }
 
   const td = q.td;
+
+  // Best-effort fmspc extraction for the report — failure is non-fatal.
   let fmspc: string | null = null;
-
-  // Cert chain
-  if (q.certDataType !== 5 && q.certDataType !== 6) {
-    errors.push(`Unsupported cert data type: ${q.certDataType}`);
-    checks.cert_chain_valid = false;
-  } else {
-    const certs = extractPemCerts(q.certData.toString("ascii"));
-    if (certs.length < 2) {
-      errors.push(`Expected at least 2 certificates, got ${certs.length}`);
-      checks.cert_chain_valid = false;
-    } else {
-      checks.cert_chain_valid = verifyCertChain(certs);
-      if (!checks.cert_chain_valid) {
-        errors.push("PCK certificate chain signature verification failed");
-      }
-
-      // QE Report Signature
-      const pckPubKey = certs[0]!.publicKey;
-      const qeSigDer = ecdsaRsToDer(
-        q.qeReportSignature.subarray(0, 32),
-        q.qeReportSignature.subarray(32, 64),
-      );
-      try {
-        const v = crypto.createVerify("SHA256");
-        v.update(q.qeReport);
-        checks.qe_report_signature_valid = v.verify(
-          { key: pckPubKey, dsaEncoding: "der" },
-          qeSigDer,
-        );
-      } catch {
-        checks.qe_report_signature_valid = false;
-      }
-      if (!checks.qe_report_signature_valid) {
-        errors.push("QE Report signature verification failed");
-      }
-
-      // Attestation key binding
-      const attKeyHash = crypto
-        .createHash("sha256")
-        .update(q.attestationPubKey)
-        .update(q.qeAuthData)
-        .digest();
-      const qeReportData = q.qeReport.subarray(320, 384);
-      checks.attestation_key_bound = qeReportData
-        .subarray(0, 32)
-        .equals(attKeyHash);
-      if (!checks.attestation_key_bound) {
-        errors.push(
-          "Attestation key hash does not match QE Report REPORTDATA",
-        );
-      }
-
-      // FMSPC
-      fmspc = extractFmspc(certs[0]!);
-    }
+  if (q.certDataType === 5 || q.certDataType === 6) {
+    const certText = q.certData.toString("ascii");
+    const m = certText.match(
+      /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/,
+    );
+    if (m) fmspc = extractFmspc(m[0]);
   }
 
-  if (!checks.cert_chain_valid) {
-    checks.qe_report_signature_valid ??= false;
-    checks.attestation_key_bound = false;
-  }
-
-  // Quote signature
-  const signedData = Buffer.concat([q.rawHeader, q.rawTdReport]);
-  checks.quote_signature_valid = verifyEcdsaP256(
-    q.attestationPubKey,
-    signedData,
-    q.quoteSignature,
-  );
-  if (!checks.quote_signature_valid) {
-    errors.push("Quote signature verification failed");
-  }
-
-  // TCB status
+  // Full DCAP verification via @teekit/qvl
   let tcbStatus = "Unknown";
-  if (fmspc) {
-    try {
-      tcbStatus = await fetchTcbStatus(fmspc, td.teeTcbSvn);
-    } catch (e: any) {
-      tcbStatus = `Could not fetch: ${e.message}`;
-    }
+  let advisoryIds: string[] = [];
+  try {
+    const capture = await qvlVerifyTdx(new Uint8Array(raw));
+    checks.quote_verified = true;
+    tcbStatus = capture.status;
+    advisoryIds = capture.advisoryIds;
+  } catch (e: any) {
+    checks.quote_verified = false;
+    errors.push(`Quote verification failed: ${e.message}`);
   }
 
-  const valid =
-    !!checks.quote_parsed &&
-    !!checks.cert_chain_valid &&
-    !!checks.qe_report_signature_valid &&
-    !!checks.attestation_key_bound &&
-    !!checks.quote_signature_valid;
+  const valid = !!checks.quote_parsed && !!checks.quote_verified;
 
   const report: Record<string, any> = {
     version: q.version,
@@ -301,14 +249,24 @@ export async function checkTdxCpuAttestation(
     xfam: td.xfam.toString("hex"),
     fmspc: fmspc ?? "",
     tcb_status: tcbStatus,
+    advisory_ids: advisoryIds,
   };
 
   return makeResult("TDX", { valid, checks, report, errors });
 }
 
 // ---------------------------------------------------------------------------
-// Quote parser (internal)
+// Quote parser (internal — kept because parseTdxQuoteFields below is exported
+// and consumed by workload.ts for measurement extraction without verification)
 // ---------------------------------------------------------------------------
+
+function readU16LE(buf: Buffer, off: number): number {
+  return buf.readUInt16LE(off);
+}
+
+function readU32LE(buf: Buffer, off: number): number {
+  return buf.readUInt32LE(off);
+}
 
 function parseQuote(raw: Buffer) {
   if (raw.length < 632) {
@@ -322,7 +280,6 @@ function parseQuote(raw: Buffer) {
   const pceSvn = readU16LE(raw, 10);
   const qeVendorId = raw.subarray(12, 28);
   const userData = raw.subarray(28, 48);
-  const rawHeader = raw.subarray(0, 48);
 
   if (version !== 4) throw new Error(`Unsupported quote version: ${version}`);
   if (teeType !== 0x81)
@@ -330,7 +287,6 @@ function parseQuote(raw: Buffer) {
 
   // TD Report Body: 584 bytes at offset 48
   const off = 48;
-  const rawTdReport = raw.subarray(off, off + 584);
   const td = {
     teeTcbSvn: raw.subarray(off, off + 16),
     mrSeam: raw.subarray(off + 16, off + 64),
@@ -349,48 +305,26 @@ function parseQuote(raw: Buffer) {
     reportData: raw.subarray(off + 520, off + 584),
   };
 
-  // Signature data at offset 632
-  let soff = 636; // skip 4-byte sig_data_len
-  const quoteSignature = raw.subarray(soff, soff + 64);
-  soff += 64;
-  const attestationPubKey = raw.subarray(soff, soff + 64);
-  soff += 64;
-
+  // Signature data at offset 632 (just enough to find certData for fmspc)
+  let soff = 636 + 64 + 64; // skip sig_data_len(4) + quote_sig(64) + att_pub_key(64)
   const outerCertType = readU16LE(raw, soff);
   soff += 2;
   const outerCertSize = readU32LE(raw, soff);
   soff += 4;
   const outerCertData = raw.subarray(soff, soff + outerCertSize);
 
-  let qeReport: Buffer;
-  let qeReportSignature: Buffer;
-  let qeAuthData: Buffer;
   let certDataType: number;
   let certData: Buffer;
-
   if (outerCertType === 6) {
-    let c = 0;
-    qeReport = outerCertData.subarray(c, c + 384);
-    c += 384;
-    qeReportSignature = outerCertData.subarray(c, c + 64);
-    c += 64;
+    let c = 384 + 64; // skip qe_report(384) + qe_report_sig(64)
     const qaLen = readU16LE(outerCertData, c);
-    c += 2;
-    qeAuthData = outerCertData.subarray(c, c + qaLen);
-    c += qaLen;
+    c += 2 + qaLen; // skip qe_auth_data
     certDataType = readU16LE(outerCertData, c);
     c += 2;
     const cdLen = readU32LE(outerCertData, c);
     c += 4;
     certData = outerCertData.subarray(c, c + cdLen);
   } else {
-    qeReport = outerCertData.subarray(0, 384);
-    qeReportSignature = outerCertData.subarray(384, 448);
-    let c = 448;
-    const qaLen = readU16LE(outerCertData, c);
-    c += 2;
-    qeAuthData = outerCertData.subarray(c, c + qaLen);
-    c += qaLen;
     certDataType = outerCertType;
     certData = outerCertData;
   }
@@ -403,14 +337,7 @@ function parseQuote(raw: Buffer) {
     pceSvn,
     qeVendorId,
     userData,
-    rawHeader,
     td,
-    rawTdReport,
-    quoteSignature,
-    attestationPubKey,
-    qeReport,
-    qeReportSignature,
-    qeAuthData,
     certDataType,
     certData,
   };

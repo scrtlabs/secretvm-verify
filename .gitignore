@@ -12,3 +12,4 @@ build/
 # Debug/test artifacts
 node/cdocker.txt
 node/cquote.txt
+node/test.js

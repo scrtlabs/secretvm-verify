@@ -1,17 +1,23 @@
-"""Intel TDX attestation verification."""
+"""Intel TDX attestation verification.
 
-import hashlib
+Cryptographic verification (PCK chain, QE Identity, CRLs, TCB Info signature,
+quote signature) is delegated to the upstream `dcap-qvl` library, which
+implements the full Intel DCAP quote verification flow. This module's job is
+to parse the quote so we can populate report fields (mr_td, report_data,
+fmspc, etc.), then hand off to dcap-qvl for the actual verification.
+"""
+
+import asyncio
 import struct
+import time
 from typing import Optional
 
-import requests
-from cryptography.hazmat.primitives.asymmetric import ec, utils
-from cryptography.hazmat.primitives import hashes
+import dcap_qvl
 from cryptography.x509 import load_pem_x509_certificate
 
 from .types import AttestationResult
 
-_INTEL_PCS_BASE = "https://api.trustedservices.intel.com/sgx/certification/v4"
+_PCCS_HOST = "https://pccs.scrtlabs.com"
 
 
 def _tdx_parse_quote(raw: bytes) -> dict:
@@ -29,11 +35,8 @@ def _tdx_parse_quote(raw: bytes) -> dict:
     if tee_type != 0x81:
         raise ValueError(f"Not a TDX quote (tee_type=0x{tee_type:x})")
 
-    raw_header = raw[0:48]
-
     # TD Report Body: 584 bytes at offset 48
     off = 48
-    raw_td_report = raw[off:off + 584]
     td = {
         "tee_tcb_svn": raw[off:off + 16],
         "mr_seam": raw[off + 16:off + 64],
@@ -55,30 +58,20 @@ def _tdx_parse_quote(raw: bytes) -> dict:
     # Signature Data at offset 632
     off = 632
     sig_data_len = struct.unpack_from("<I", raw, off)[0]
-    off += 4
-
-    quote_sig = raw[off:off + 64]; off += 64
-    att_pub_key = raw[off:off + 64]; off += 64
+    off += 4 + 64 + 64  # skip quote_sig (64) + att_pub_key (64)
 
     outer_cert_type = struct.unpack_from("<H", raw, off)[0]; off += 2
     outer_cert_size = struct.unpack_from("<I", raw, off)[0]; off += 4
     outer_cert_data = raw[off:off + outer_cert_size]
 
     if outer_cert_type == 6:
-        coff = 0
-        qe_report = outer_cert_data[coff:coff + 384]; coff += 384
-        qe_report_sig = outer_cert_data[coff:coff + 64]; coff += 64
+        coff = 384 + 64  # skip qe_report (384) + qe_report_sig (64)
         qe_auth_len = struct.unpack_from("<H", outer_cert_data, coff)[0]; coff += 2
-        qe_auth_data = outer_cert_data[coff:coff + qe_auth_len]; coff += qe_auth_len
+        coff += qe_auth_len  # skip qe_auth_data
         cert_data_type = struct.unpack_from("<H", outer_cert_data, coff)[0]; coff += 2
         cert_data_len = struct.unpack_from("<I", outer_cert_data, coff)[0]; coff += 4
         cert_data = outer_cert_data[coff:coff + cert_data_len]
     else:
-        qe_report = outer_cert_data[0:384]
-        qe_report_sig = outer_cert_data[384:448]
-        coff = 448
-        qe_auth_len = struct.unpack_from("<H", outer_cert_data, coff)[0]; coff += 2
-        qe_auth_data = outer_cert_data[coff:coff + qe_auth_len]; coff += qe_auth_len
         cert_data_type = outer_cert_type
         cert_data = outer_cert_data
 
@@ -91,13 +84,6 @@ def _tdx_parse_quote(raw: bytes) -> dict:
         "qe_vendor_id": qe_vendor_id,
         "user_data": user_data,
         "td": td,
-        "raw_header": raw_header,
-        "raw_td_report": raw_td_report,
-        "quote_signature": quote_sig,
-        "attestation_pub_key": att_pub_key,
-        "qe_report": qe_report,
-        "qe_report_signature": qe_report_sig,
-        "qe_auth_data": qe_auth_data,
         "cert_data_type": cert_data_type,
         "cert_data": cert_data,
     }
@@ -120,32 +106,8 @@ def _tdx_extract_pem_certs(pem_data: bytes) -> list:
     return certs
 
 
-def _tdx_verify_cert_chain(certs: list) -> bool:
-    import datetime
-    now = datetime.datetime.now(datetime.timezone.utc)
-    for cert in certs:
-        if now < cert.not_valid_before_utc or now > cert.not_valid_after_utc:
-            return False
-    for i in range(len(certs) - 1):
-        child, parent = certs[i], certs[i + 1]
-        try:
-            parent.public_key().verify(
-                child.signature, child.tbs_certificate_bytes, ec.ECDSA(hashes.SHA256())
-            )
-        except Exception:
-            return False
-    if certs:
-        root = certs[-1]
-        try:
-            root.public_key().verify(
-                root.signature, root.tbs_certificate_bytes, ec.ECDSA(hashes.SHA256())
-            )
-        except Exception:
-            return False
-    return True
-
-
 def _tdx_extract_fmspc(cert) -> Optional[str]:
+    """Extract the 6-byte FMSPC from the PCK leaf certificate's Intel SGX extension."""
     try:
         for ext in cert.extensions:
             if ext.oid.dotted_string == "1.2.840.113741.1.13.1":
@@ -162,57 +124,76 @@ def _tdx_extract_fmspc(cert) -> Optional[str]:
     return None
 
 
-def _tdx_verify_ecdsa_p256(public_key_bytes: bytes, message: bytes, signature_bytes: bytes) -> bool:
-    x = int.from_bytes(public_key_bytes[:32], "big")
-    y = int.from_bytes(public_key_bytes[32:64], "big")
-    pub_key = ec.EllipticCurvePublicNumbers(x=x, y=y, curve=ec.SECP256R1()).public_key()
-    r = int.from_bytes(signature_bytes[:32], "big")
-    s = int.from_bytes(signature_bytes[32:64], "big")
-    der_sig = utils.encode_dss_signature(r, s)
+def _maybe_dehex(b: bytes) -> bytes:
+    """Decode hex-ASCII to raw bytes if `b` looks like hex-encoded ASN.1.
+
+    The SCRT PCCS deployment returns the root CA CRL as hex-encoded ASCII
+    (e.g. b'30820122...') instead of raw DER. dcap-qvl reads the body as raw
+    bytes and chokes with TrailingData. We patch by detecting hex-ASCII and
+    decoding it. Other PCCS deployments return raw DER, in which case the
+    decode either fails or doesn't begin with an ASN.1 SEQUENCE tag, and we
+    pass the bytes through unchanged.
+    """
     try:
-        pub_key.verify(der_sig, message, ec.ECDSA(hashes.SHA256()))
-        return True
-    except Exception:
-        return False
+        decoded = bytes.fromhex(b.decode("ascii"))
+        if decoded and decoded[0] == 0x30:  # ASN.1 SEQUENCE
+            return decoded
+    except (UnicodeDecodeError, ValueError):
+        pass
+    return b
 
 
-def _tdx_fetch_tcb_status(fmspc: str, tee_tcb_svn: bytes) -> str:
-    url = f"{_INTEL_PCS_BASE}/tcb?fmspc={fmspc}&type=TDX"
-    resp = requests.get(url, timeout=15)
-    if resp.status_code != 200:
-        return f"PCS returned {resp.status_code}"
-    tcb_info = resp.json()
-    tcb_info = tcb_info.get("tcbInfo", tcb_info)
-    for level in tcb_info.get("tcbLevels", []):
-        tcb = level.get("tcb", {})
-        tdx_components = tcb.get("tdxtcbcomponents", [])
-        match = True
-        for i, comp in enumerate(tdx_components):
-            if i < len(tee_tcb_svn) and tee_tcb_svn[i] < comp.get("svn", 0):
-                match = False
-                break
-        if match:
-            status = level.get("tcbStatus", "Unknown")
-            tcb_date = level.get("tcbDate", "")
-            return f"{status} (as of {tcb_date})" if tcb_date else status
-    return "OutOfDate (no matching TCB level found)"
+async def _tdx_fetch_collateral(raw_quote: bytes) -> "dcap_qvl.QuoteCollateralV3":
+    """Fetch the full DCAP collateral bundle from PCCS for a given quote.
+
+    dcap-qvl parses the quote internally to extract the FMSPC and CA, then
+    fetches all nine collateral fields (TCB Info, QE Identity, PCK CRL, Root
+    CA CRL, plus their issuer chains and signatures).
+    """
+    coll = await dcap_qvl.get_collateral(_PCCS_HOST, raw_quote)
+    # SCRT PCCS-specific patch: rebuild the collateral with a dehex'd root_ca_crl.
+    return dcap_qvl.QuoteCollateralV3(
+        pck_crl_issuer_chain=coll.pck_crl_issuer_chain,
+        root_ca_crl=_maybe_dehex(coll.root_ca_crl),
+        pck_crl=coll.pck_crl,
+        tcb_info_issuer_chain=coll.tcb_info_issuer_chain,
+        tcb_info=coll.tcb_info,
+        tcb_info_signature=coll.tcb_info_signature,
+        qe_identity_issuer_chain=coll.qe_identity_issuer_chain,
+        qe_identity=coll.qe_identity,
+        qe_identity_signature=coll.qe_identity_signature,
+    )
 
 
-def check_tdx_cpu_attestation(data_or_url: str) -> AttestationResult:
-    """Verify an Intel TDX attestation quote.
+async def _tdx_dcap_verify_async(raw_quote: bytes) -> "dcap_qvl.VerifiedReport":
+    """Fetch collateral and verify a quote via dcap-qvl. Pure async — safe inside event loops."""
+    collateral = await _tdx_fetch_collateral(raw_quote)
+    return dcap_qvl.verify(raw_quote, collateral, int(time.time()))
 
-    Args:
-        data_or_url: Hex-encoded TDX quote, or a VM URL to fetch the quote from.
 
-    Returns:
-        AttestationResult with verification status and parsed report fields.
+async def check_tdx_cpu_attestation_async(data_or_url: str) -> AttestationResult:
+    """Async variant of :func:`check_tdx_cpu_attestation`.
+
+    Use this from inside an event loop (FastAPI handlers, Jupyter notebooks,
+    other async frameworks). The sync :func:`check_tdx_cpu_attestation` is a
+    thin ``asyncio.run()`` wrapper around this and cannot be called from a
+    running loop.
+
+    All blocking I/O (HTTP fetches for the VM quote and PCCS collateral) is
+    properly offloaded so the event loop is never blocked for more than a
+    syscall's worth of work.
     """
     from .url import is_vm_url, fetch_cpu_quote
-    data = fetch_cpu_quote(data_or_url) if is_vm_url(data_or_url) else data_or_url
-    errors = []
-    checks = {}
+    if is_vm_url(data_or_url):
+        # fetch_cpu_quote is sync (requests-based) — offload to a thread so
+        # the event loop isn't blocked on the network round-trip.
+        data = await asyncio.to_thread(fetch_cpu_quote, data_or_url)
+    else:
+        data = data_or_url
+    errors: list = []
+    checks: dict = {}
 
-    # Parse
+    # Parse — needed to populate report fields and extract fmspc for the report
     try:
         raw = bytes.fromhex(data.strip())
         q = _tdx_parse_quote(raw)
@@ -225,73 +206,29 @@ def check_tdx_cpu_attestation(data_or_url: str) -> AttestationResult:
 
     td = q["td"]
 
-    # Extract certs
-    if q["cert_data_type"] not in (5, 6):
-        errors.append(f"Unsupported cert data type: {q['cert_data_type']}")
-        checks["cert_chain_valid"] = False
-    else:
-        certs = _tdx_extract_pem_certs(q["cert_data"])
-        if len(certs) < 2:
-            errors.append(f"Expected at least 2 certificates, got {len(certs)}")
-            checks["cert_chain_valid"] = False
-        else:
-            checks["cert_chain_valid"] = _tdx_verify_cert_chain(certs)
-            if not checks["cert_chain_valid"]:
-                errors.append("PCK certificate chain signature verification failed")
-
-    # QE Report Signature
-    if checks.get("cert_chain_valid"):
-        pck_pub_key = certs[0].public_key()
-        qe_sig = q["qe_report_signature"]
-        r = int.from_bytes(qe_sig[:32], "big")
-        s = int.from_bytes(qe_sig[32:64], "big")
-        der_sig = utils.encode_dss_signature(r, s)
+    # Best-effort fmspc extraction for the report — failure is non-fatal.
+    fmspc: Optional[str] = None
+    if q["cert_data_type"] in (5, 6):
         try:
-            pck_pub_key.verify(der_sig, q["qe_report"], ec.ECDSA(hashes.SHA256()))
-            checks["qe_report_signature_valid"] = True
+            certs = _tdx_extract_pem_certs(q["cert_data"])
+            if certs:
+                fmspc = _tdx_extract_fmspc(certs[0])
         except Exception:
-            checks["qe_report_signature_valid"] = False
-            errors.append("QE Report signature verification failed")
+            pass
 
-        # Attestation key binding
-        att_key_hash = hashlib.sha256(
-            q["attestation_pub_key"] + q["qe_auth_data"]
-        ).digest()
-        qe_report_data = q["qe_report"][320:384]
-        checks["attestation_key_bound"] = qe_report_data[:32] == att_key_hash
-        if not checks["attestation_key_bound"]:
-            errors.append("Attestation key hash does not match QE Report REPORTDATA")
-
-        # FMSPC
-        fmspc = _tdx_extract_fmspc(certs[0])
-    else:
-        checks.setdefault("qe_report_signature_valid", False)
-        checks["attestation_key_bound"] = False
-        fmspc = None
-
-    # Quote Signature
-    signed_data = q["raw_header"] + q["raw_td_report"]
-    checks["quote_signature_valid"] = _tdx_verify_ecdsa_p256(
-        q["attestation_pub_key"], signed_data, q["quote_signature"]
-    )
-    if not checks["quote_signature_valid"]:
-        errors.append("Quote signature verification failed")
-
-    # TCB status (best-effort)
+    # Full DCAP verification via dcap-qvl
     tcb_status = "Unknown"
-    if fmspc:
-        try:
-            tcb_status = _tdx_fetch_tcb_status(fmspc, td["tee_tcb_svn"])
-        except Exception as e:
-            tcb_status = f"Could not fetch: {e}"
+    advisory_ids: list = []
+    try:
+        result = await _tdx_dcap_verify_async(raw)
+        checks["quote_verified"] = True
+        tcb_status = result.status
+        advisory_ids = list(result.advisory_ids or [])
+    except Exception as e:
+        checks["quote_verified"] = False
+        errors.append(f"Quote verification failed: {e}")
 
-    valid = all([
-        checks.get("quote_parsed"),
-        checks.get("cert_chain_valid"),
-        checks.get("qe_report_signature_valid"),
-        checks.get("attestation_key_bound"),
-        checks.get("quote_signature_valid"),
-    ])
+    valid = bool(checks.get("quote_parsed") and checks.get("quote_verified"))
 
     report = {
         "version": q["version"],
@@ -315,9 +252,32 @@ def check_tdx_cpu_attestation(data_or_url: str) -> AttestationResult:
         "xfam": td["xfam"].hex(),
         "fmspc": fmspc or "",
         "tcb_status": tcb_status,
+        "advisory_ids": advisory_ids,
     }
 
     return AttestationResult(
         valid=valid, attestation_type="TDX",
         checks=checks, report=report, errors=errors,
     )
+
+
+def check_tdx_cpu_attestation(data_or_url: str) -> AttestationResult:
+    """Verify an Intel TDX attestation quote (sync).
+
+    Cryptographic verification is delegated to dcap-qvl, which performs the
+    full DCAP flow: PCK certificate chain validation against the pinned Intel
+    SGX Root CA, QE Identity check, PCK and Root CA CRL revocation checks,
+    TCB Info signature verification, quote signature verification, and TCB
+    status derivation.
+
+    This function calls :func:`asyncio.run` internally and therefore cannot
+    be invoked from inside an existing event loop. From async code (FastAPI,
+    Jupyter, etc.), use :func:`check_tdx_cpu_attestation_async` instead.
+
+    Args:
+        data_or_url: Hex-encoded TDX quote, or a VM URL to fetch the quote from.
+
+    Returns:
+        AttestationResult with verification status and parsed report fields.
+    """
+    return asyncio.run(check_tdx_cpu_attestation_async(data_or_url))

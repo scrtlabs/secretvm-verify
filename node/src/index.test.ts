@@ -41,10 +41,7 @@ describe("checkTdxCpuAttestation", () => {
     assert.equal(result.valid, true);
     assert.equal(result.attestationType, "TDX");
     assert.equal(result.checks.quote_parsed, true);
-    assert.equal(result.checks.cert_chain_valid, true);
-    assert.equal(result.checks.qe_report_signature_valid, true);
-    assert.equal(result.checks.attestation_key_bound, true);
-    assert.equal(result.checks.quote_signature_valid, true);
+    assert.equal(result.checks.quote_verified, true);
     assert.deepEqual(result.errors, []);
   });
 
@@ -84,7 +81,8 @@ describe("checkTdxCpuAttestation", () => {
     const corrupted = Buffer.from(raw);
     corrupted[640]! ^= 0xff;
     const result = await checkTdxCpuAttestation(corrupted.toString("hex"));
-    assert.equal(result.checks.quote_signature_valid, false);
+    assert.equal(result.checks.quote_verified, false);
+    assert.equal(result.valid, false);
   });
 });
 
@@ -309,7 +307,7 @@ describe("checkSecretVm", () => {
       const cpuResult: AttestationResult = {
         valid: true,
         attestationType: "TDX",
-        checks: { quote_parsed: true, quote_signature_valid: true },
+        checks: { quote_parsed: true, quote_verified: true },
         report: { report_data: reportData, mr_td: "cc".repeat(48) },
         errors: [],
       };

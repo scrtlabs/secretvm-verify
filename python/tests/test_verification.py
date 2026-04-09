@@ -77,10 +77,7 @@ class TestTdxAttestation:
         assert result.attestation_type == "TDX"
         assert result.valid is True
         assert result.checks["quote_parsed"] is True
-        assert result.checks["cert_chain_valid"] is True
-        assert result.checks["qe_report_signature_valid"] is True
-        assert result.checks["attestation_key_bound"] is True
-        assert result.checks["quote_signature_valid"] is True
+        assert result.checks["quote_verified"] is True
         assert result.errors == []
 
     def test_report_fields(self, tdx_quote):
@@ -115,7 +112,8 @@ class TestTdxAttestation:
         corrupted = bytearray(raw)
         corrupted[640] ^= 0xFF
         result = check_tdx_cpu_attestation(corrupted.hex())
-        assert result.checks["quote_signature_valid"] is False
+        assert result.checks["quote_verified"] is False
+        assert result.valid is False
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +285,7 @@ def _make_test_data(tls_hex="aa" * 32, nonce_hex="bb" * 32):
 
     cpu_result = AttestationResult(
         valid=True, attestation_type="TDX",
-        checks={"quote_parsed": True, "quote_signature_valid": True},
+        checks={"quote_parsed": True, "quote_verified": True},
         report={"report_data": report_data, "mr_td": "cc" * 48},
     )
     gpu_result = AttestationResult(
@@ -421,9 +419,9 @@ class TestSecretVm:
         tls_fp, _, _, _, no_gpu_json, workload_pass = _make_test_data()
         bad_cpu = AttestationResult(
             valid=False, attestation_type="TDX",
-            checks={"quote_parsed": True, "quote_signature_valid": False},
+            checks={"quote_parsed": True, "quote_verified": False},
             report={"report_data": "aa" * 32 + "bb" * 32},
-            errors=["Quote signature verification failed"],
+            errors=["Quote verification failed"],
         )
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
@@ -555,10 +553,7 @@ class TestCheckTdxCpuAttestationDockerQuote:
         result = check_tdx_cpu_attestation(docker_quote)
         assert result.valid is True
         assert result.checks["quote_parsed"] is True
-        assert result.checks["cert_chain_valid"] is True
-        assert result.checks["qe_report_signature_valid"] is True
-        assert result.checks["attestation_key_bound"] is True
-        assert result.checks["quote_signature_valid"] is True
+        assert result.checks["quote_verified"] is True
         assert result.errors == []
 
     def test_corrupted_quote_fails_signature(self, docker_quote):
@@ -566,7 +561,7 @@ class TestCheckTdxCpuAttestationDockerQuote:
         # Flip a byte inside the ECDSA quote signature area (offset 636)
         raw[636] ^= 0xFF
         result = check_tdx_cpu_attestation(bytes(raw).hex())
-        assert result.checks["quote_signature_valid"] is False
+        assert result.checks["quote_verified"] is False
         assert result.valid is False
 
     def test_invalid_hex_fails_parse(self):

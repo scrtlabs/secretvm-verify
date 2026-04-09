@@ -288,6 +288,9 @@ def verify_agent(metadata: AgentMetadata) -> AttestationResult:
 
     cpu_result = check_cpu_attestation(cpu_data)
     checks["cpu_attestation_valid"] = cpu_result.valid
+    # Propagate the inner DCAP/QVL verification verdict for prominent display.
+    if "quote_verified" in cpu_result.checks:
+        checks["cpu_quote_verified"] = cpu_result.checks["quote_verified"]
     report["cpu"] = cpu_result.report
     report["cpu_type"] = cpu_result.attestation_type
     if not cpu_result.valid:

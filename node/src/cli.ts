@@ -295,6 +295,26 @@ if (raw) {
   process.exit(result.valid ? 0 : 1);
 }
 
+// Prominent top-level cryptographic attestation verdict.
+// Prefer the QVL `quote_verified` signal (direct CPU/TDX call), or its
+// propagated form `cpu_quote_verified` from a wrapper (checkSecretVm,
+// verifyAgent). Fall back to other CPU verdict signals so this line works
+// across all attestation types.
+function getAttestationVerdict(r: AttestationResult): boolean | null {
+  const c = r.checks;
+  if (c.quote_verified !== undefined) return !!c.quote_verified;
+  if (c.cpu_quote_verified !== undefined) return !!c.cpu_quote_verified;
+  if (c.report_signature_valid !== undefined) return !!c.report_signature_valid;
+  if (c.cpu_attestation_valid !== undefined) return !!c.cpu_attestation_valid;
+  return null;
+}
+const verdict = getAttestationVerdict(result);
+if (verdict !== null) {
+  const label = verdict ? "PASS" : "FAIL";
+  const icon = verdict ? "✅" : "🚫";
+  console.log(`${icon} Attestation verified: ${label}\n`);
+}
+
 console.log("Checks:");
 for (const [name, passed] of Object.entries(result.checks)) {
   if (name === "gpu_quote_fetched" && !passed) {
@@ -315,7 +335,11 @@ if (report.tls_fingerprint) console.log(`TLS fingerprint: ${report.tls_fingerpri
 const cpu = report.cpu ?? report;
 if (cpu.report_data) console.log(`Report data: ${cpu.report_data}`);
 if (cpu.measurement) console.log(`Measurement: ${cpu.measurement}`);
-if (cpu.mr_td) console.log(`MR TD: ${cpu.mr_td}`);
+if (cpu.mr_td) console.log(`MR TD:  ${cpu.mr_td}`);
+if (cpu.rt_mr0) console.log(`RTMR0:  ${cpu.rt_mr0}`);
+if (cpu.rt_mr1) console.log(`RTMR1:  ${cpu.rt_mr1}`);
+if (cpu.rt_mr2) console.log(`RTMR2:  ${cpu.rt_mr2}`);
+if (cpu.rt_mr3) console.log(`RTMR3:  ${cpu.rt_mr3}`);
 if (cpu.tcb_status) console.log(`TCB status: ${cpu.tcb_status}`);
 if (cpu.product) console.log(`AMD product: ${cpu.product}`);
 if (cpu.chip_id) console.log(`Chip ID: ${cpu.chip_id}`);

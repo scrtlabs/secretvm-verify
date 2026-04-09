@@ -6,7 +6,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 
 ## What it verifies
 
-- **Intel TDX** — Parses a TDX Quote v4, verifies the ECDSA-P256 signature chain (PCK → Intermediate → Root), validates QE report binding, and checks TCB status against Intel's Provisioning Certification Service.
+- **Intel TDX** — Performs full Intel DCAP quote verification, delegating the cryptographic checks to the upstream [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) (Python) / [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (Node) library. Verifies the PCK certificate chain against a pinned Intel SGX Root CA, the QE Identity, PCK CRL and Root CA CRL revocation, the TCB Info signature, the TCB status, the quote signature, and the QE report binding. Collateral (TCB Info, QE Identity, CRLs, issuer chains) is fetched from a Provisioning Certificate Caching Service (PCCS) — defaults to SCRT Labs' deployment.
 - **AMD SEV-SNP** — Parses a SEV-SNP attestation report, fetches the VCEK certificate from AMD's Key Distribution Service, verifies the ECDSA-P384 report signature, and validates the certificate chain (VCEK → ASK → ARK).
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image (`resolveSecretVmVersion` / `verifyTdxWorkload`). Looks up the quote's MRTD and RTMR0–2 in a signed registry of official SecretVM builds, then replays the RTMR3 measurement to verify the exact compose file that was booted.
@@ -478,7 +478,7 @@ The library contacts these services during verification:
 
 | Service | Used by | Purpose |
 |---------|---------|---------|
-| [Intel PCS](https://api.trustedservices.intel.com) | TDX | TCB status lookup |
+| [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains) |
 | [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate and cert chain |
 | [NVIDIA NRAS](https://nras.attestation.nvidia.com) | GPU | GPU attestation verification |
 
@@ -521,10 +521,10 @@ secretvm-verify/
 
 ## Requirements
 
-- **Python:** >= 3.10, `requests`, `cryptography`, `openssl` CLI
-- **Node.js:** >= 18 (uses built-in `crypto`, `fetch`), `openssl` CLI
+- **Python:** >= 3.10. Dependencies: `requests`, `cryptography`, `PyYAML`, `web3`, [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) (TDX quote verification).
+- **Node.js:** >= 18 (uses built-in `crypto`, `fetch`). Dependencies: [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (TDX quote verification), `ethers` (ERC-8004 agent resolution).
 
-The `openssl` CLI is required for AMD SEV-SNP certificate chain verification (AMD's certificates use RSA-PSS with non-standard ASN.1 encoding that some library parsers reject).
+No system-level dependencies. AMD SEV-SNP certificate chains (RSA-PSS) are verified natively via `cryptography` (Python) and `node:crypto` (Node).
 
 ## License
 

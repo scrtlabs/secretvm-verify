@@ -13,6 +13,7 @@ dependencies = [
     "cryptography",
     "PyYAML",
     "web3",
+    "dcap-qvl>=0.3",
 ]
 
 [project.optional-dependencies]

@@ -5,6 +5,7 @@ Public API:
     check_secret_vm(url: str, product: str = "") -> AttestationResult
     check_cpu_attestation(data: str, product: str = "") -> AttestationResult
     check_tdx_cpu_attestation(data: str) -> AttestationResult
+    check_tdx_cpu_attestation_async(data: str) -> AttestationResult  (await from async code)
     check_sev_cpu_attestation(data: str, product: str = "") -> AttestationResult
     check_nvidia_gpu_attestation(data: str) -> AttestationResult
 
@@ -21,7 +22,7 @@ import requests  # noqa: F401
 from .types import AttestationResult, WorkloadResult, AgentMetadata, AgentService
 
 # TDX
-from .tdx import check_tdx_cpu_attestation
+from .tdx import check_tdx_cpu_attestation, check_tdx_cpu_attestation_async
 
 # AMD SEV-SNP
 from .amd import check_sev_cpu_attestation
@@ -65,6 +66,7 @@ __all__ = [
     "AgentService",
     # TDX
     "check_tdx_cpu_attestation",
+    "check_tdx_cpu_attestation_async",
     # AMD
     "check_sev_cpu_attestation",
     # CPU
