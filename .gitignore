@@ -23,3 +23,7 @@ node/test.js
 intel_tcb_*
 nras_response*
 Intel_SGX_*.pem
+
+# Jupyter scratch
+*.ipynb
+.ipynb_checkpoints/
