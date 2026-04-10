@@ -29,6 +29,7 @@ export function parseVmUrl(url: string): { host: string; port: number } {
 export async function checkSecretVm(
   url: string,
   product = "",
+  reloadAmdKds = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -69,7 +70,7 @@ export async function checkSecretVm(
     return makeResult("SECRET-VM", { checks, report, errors });
   }
 
-  const cpuResult = await checkCpuAttestation(cpuData, product);
+  const cpuResult = await checkCpuAttestation(cpuData, product, reloadAmdKds);
   checks.cpu_attestation_valid = cpuResult.valid;
   // Propagate the inner DCAP/QVL verification verdict so callers (and the CLI)
   // can surface it prominently. Only TDX currently uses QVL; SEV results don't

@@ -106,16 +106,25 @@ def _vcek_cache_key(product: str, chip_id: bytes, tcb: dict) -> str:
     )
 
 
-def _amd_fetch_vcek(product: str, chip_id: bytes, reported_tcb: dict):
+def _amd_fetch_vcek(
+    product: str,
+    chip_id: bytes,
+    reported_tcb: dict,
+    reload_amd_kds: bool = False,
+):
     """Fetch VCEK cert (cache-first). Auto-detects product if empty.
     Returns (cert_obj, der_bytes, product_name).
+
+    When ``reload_amd_kds`` is True, the cache read is skipped and a fresh
+    fetch is performed; the result is still written back to the cache.
     """
     candidates = [product] if product else ["Genoa", "Milan", "Turin"]
     for name in candidates:
         cache_key = _vcek_cache_key(name, chip_id, reported_tcb)
-        cached = _cache.get("vcek", cache_key)
-        if cached is not None:
-            return load_der_x509_certificate(cached), cached, name
+        if not reload_amd_kds:
+            cached = _cache.get("vcek", cache_key)
+            if cached is not None:
+                return load_der_x509_certificate(cached), cached, name
         url = _amd_vcek_url(name, chip_id, reported_tcb)
         resp = requests.get(url, timeout=15)
         if resp.status_code == 200:
@@ -135,11 +144,16 @@ def _amd_fetch_vcek(product: str, chip_id: bytes, reported_tcb: dict):
     raise RuntimeError("Could not fetch VCEK for any known product (Genoa/Milan/Turin)")
 
 
-def _amd_fetch_chain_pem(product: str) -> bytes:
-    """Fetch the AMD CA cert chain (ASK + ARK) for a product, cache-first."""
-    cached = _cache.get("cert_chain", product)
-    if cached is not None:
-        return cached
+def _amd_fetch_chain_pem(product: str, reload_amd_kds: bool = False) -> bytes:
+    """Fetch the AMD CA cert chain (ASK + ARK) for a product, cache-first.
+
+    When ``reload_amd_kds`` is True, the cache read is skipped and a fresh
+    fetch is performed; the result is still written back to the cache.
+    """
+    if not reload_amd_kds:
+        cached = _cache.get("cert_chain", product)
+        if cached is not None:
+            return cached
     url = f"{_AMD_KDS_BASE}/vcek/v1/{product}/cert_chain"
     try:
         resp = requests.get(url, timeout=15)
@@ -157,17 +171,23 @@ def _amd_fetch_chain_pem(product: str) -> bytes:
     return resp.content
 
 
-def _amd_fetch_crl(product: str) -> bytes:
+def _amd_fetch_crl(product: str, reload_amd_kds: bool = False) -> bytes:
     """Fetch the AMD VCEK CRL for a product, cache-first.
 
-    The CRL is consulted to detect chips that AMD has revoked. We cache for
-    7 days, matching AMD's typical CRL ``nextUpdate`` window. On network
-    failure we fall back to a stale cached entry rather than failing every
-    SEV verification while KDS is down.
+    The CRL is consulted to detect chips that AMD has revoked. The cache TTL
+    is computed from the CRL's own X.509 ``nextUpdate`` field, so the cache
+    naturally aligns with AMD's published refresh schedule. If the CRL has
+    no ``nextUpdate`` (rare) or parsing fails, we fall back to a 7-day TTL.
+    On network failure we fall back to a stale cached entry rather than
+    failing every SEV verification while KDS is down.
+
+    When ``reload_amd_kds`` is True, the cache read is skipped and a fresh
+    fetch is performed; the result is still written back to the cache.
     """
-    cached = _cache.get("crl", product)
-    if cached is not None:
-        return cached
+    if not reload_amd_kds:
+        cached = _cache.get("crl", product)
+        if cached is not None:
+            return cached
     url = f"{_AMD_KDS_BASE}/vcek/v1/{product}/crl"
     try:
         resp = requests.get(url, timeout=15)
@@ -181,7 +201,23 @@ def _amd_fetch_crl(product: str) -> bytes:
         if stale is not None:
             return stale
         raise RuntimeError(f"AMD KDS crl returned {resp.status_code}")
-    _cache.put("crl", product, resp.content, _cache.TTL_CRL_SECONDS)
+
+    # Use the CRL's own nextUpdate as the TTL when available; fall back to
+    # the 7-day default when it's missing or parsing fails.
+    ttl = _cache.TTL_CRL_SECONDS
+    try:
+        crl = load_der_x509_crl(resp.content)
+        next_update = crl.next_update_utc
+        if next_update is not None:
+            seconds = int(
+                (next_update - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+            )
+            if seconds > 0:
+                ttl = seconds
+    except Exception:
+        pass
+
+    _cache.put("crl", product, resp.content, ttl)
     return resp.content
 
 
@@ -273,12 +309,19 @@ def _amd_verify_report_signature(rpt: dict, vcek_cert) -> bool:
         return False
 
 
-def check_sev_cpu_attestation(data_or_url: str, product: str = "") -> AttestationResult:
+def check_sev_cpu_attestation(
+    data_or_url: str,
+    product: str = "",
+    reload_amd_kds: bool = False,
+) -> AttestationResult:
     """Verify an AMD SEV-SNP attestation report.
 
     Args:
         data_or_url: Base64-encoded attestation report, or a VM URL to fetch the quote from.
         product: AMD product name (Genoa, Milan, Turin). Auto-detected if empty.
+        reload_amd_kds: If True, bypass the local cache and re-fetch the
+            VCEK, AMD CA cert chain, and CRL from kdsintf.amd.com. The fresh
+            data is written back to the cache so subsequent calls are fast.
 
     Returns:
         AttestationResult with verification status and parsed report fields.
@@ -306,7 +349,7 @@ def check_sev_cpu_attestation(data_or_url: str, product: str = "") -> Attestatio
     # Fetch VCEK
     try:
         vcek, vcek_der, detected_product = _amd_fetch_vcek(
-            product, rpt["chip_id"], rpt["reported_tcb"]
+            product, rpt["chip_id"], rpt["reported_tcb"], reload_amd_kds=reload_amd_kds,
         )
         checks["vcek_fetched"] = True
     except Exception as e:
@@ -319,7 +362,7 @@ def check_sev_cpu_attestation(data_or_url: str, product: str = "") -> Attestatio
 
     # Verify cert chain (VCEK -> ASK -> ARK)
     try:
-        chain_pem = _amd_fetch_chain_pem(detected_product)
+        chain_pem = _amd_fetch_chain_pem(detected_product, reload_amd_kds=reload_amd_kds)
         checks["cert_chain_valid"] = _amd_verify_cert_chain(vcek_der, chain_pem)
         if not checks["cert_chain_valid"]:
             errors.append("Certificate chain verification failed (VCEK -> ASK -> ARK)")
@@ -330,7 +373,7 @@ def check_sev_cpu_attestation(data_or_url: str, product: str = "") -> Attestatio
     # CRL revocation check — fetch the AMD VCEK CRL and confirm the leaf
     # cert's serial number is not in the revoked list. Cached for 7 days.
     try:
-        crl_der = _amd_fetch_crl(detected_product)
+        crl_der = _amd_fetch_crl(detected_product, reload_amd_kds=reload_amd_kds)
         checks["crl_check_passed"] = _amd_check_vcek_revocation(vcek, crl_der)
         if not checks["crl_check_passed"]:
             errors.append(
@@ -385,7 +428,9 @@ def check_sev_cpu_attestation(data_or_url: str, product: str = "") -> Attestatio
 
 
 async def check_sev_cpu_attestation_async(
-    data_or_url: str, product: str = ""
+    data_or_url: str,
+    product: str = "",
+    reload_amd_kds: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`check_sev_cpu_attestation`.
 
@@ -396,4 +441,6 @@ async def check_sev_cpu_attestation_async(
     thread pool via :func:`asyncio.to_thread`. The event loop is not blocked
     while the AMD KDS round-trip and signature verification run.
     """
-    return await asyncio.to_thread(check_sev_cpu_attestation, data_or_url, product)
+    return await asyncio.to_thread(
+        check_sev_cpu_attestation, data_or_url, product, reload_amd_kds,
+    )

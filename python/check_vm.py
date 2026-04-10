@@ -9,10 +9,12 @@ from secretvm.verify import check_secret_vm
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--raw] [--verbose|-v]")
+        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--raw] [--verbose|-v] [--reload-amd-kds]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
         print(f"  Default output is the verdict only; use --verbose for the per-check")
         print(f"  breakdown and report field details.")
+        print(f"  --reload-amd-kds bypasses the local AMD KDS cache and re-fetches")
+        print(f"  VCEK, CA cert chain, and CRL from kdsintf.amd.com (no effect on TDX).")
         sys.exit(1)
 
     url = sys.argv[1]
@@ -24,10 +26,11 @@ def main():
 
     raw = "--raw" in sys.argv
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
+    reload_amd_kds = "--reload-amd-kds" in sys.argv
 
     if not raw:
         print(f"Checking attestation for {url} ...\n")
-    result = check_secret_vm(url, product=product)
+    result = check_secret_vm(url, product=product, reload_amd_kds=reload_amd_kds)
 
     if raw:
         print(json.dumps(asdict(result), indent=2))

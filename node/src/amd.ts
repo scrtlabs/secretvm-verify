@@ -1,10 +1,58 @@
 import crypto from "node:crypto";
+import { fromBER, Integer, Sequence, UTCTime } from "asn1js";
 import { parseCrlRevokedSerials, normalizeSerialHex } from "@teekit/qvl/utils";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 import { AttestationResult, makeResult } from "./types.js";
 import * as kdsCache from "./kdsCache.js";
 
 const AMD_KDS_BASE = "https://kdsintf.amd.com";
+
+/**
+ * Parse the `nextUpdate` field from a DER-encoded X.509 CRL.
+ *
+ * Returns the nextUpdate as a Date, or null if the CRL has no nextUpdate
+ * field or parsing fails. We use this to size the AMD CRL cache TTL to the
+ * CRL's own expiration window rather than a fixed value.
+ *
+ * X.509 CRL structure:
+ *   CertificateList ::= SEQUENCE {
+ *     tbsCertList SEQUENCE {
+ *       version Version OPTIONAL,        -- INTEGER
+ *       signature AlgorithmIdentifier,    -- SEQUENCE
+ *       issuer Name,                      -- SEQUENCE
+ *       thisUpdate Time,                  -- UTCTime or GeneralizedTime
+ *       nextUpdate Time OPTIONAL,         -- the field we want
+ *       ...
+ *     },
+ *     ...
+ *   }
+ *
+ * GeneralizedTime extends UTCTime in asn1js, so a single `instanceof UTCTime`
+ * check catches both encodings; both expose `toDate()`.
+ */
+function parseCrlNextUpdate(der: Uint8Array): Date | null {
+  try {
+    const parsed = fromBER(der);
+    if (parsed.offset === -1) return null;
+
+    const certList = parsed.result;
+    if (!(certList instanceof Sequence)) return null;
+    const tbsCertList = certList.valueBlock.value[0];
+    if (!(tbsCertList instanceof Sequence)) return null;
+    const children = tbsCertList.valueBlock.value;
+
+    let i = 0;
+    if (children[i] instanceof Integer) i++; // optional version
+    i += 3; // signature AlgorithmIdentifier, issuer Name, thisUpdate Time
+    if (i >= children.length) return null;
+
+    const nextUpdate = children[i];
+    if (nextUpdate instanceof UTCTime) return nextUpdate.toDate();
+    return null;
+  } catch {
+    return null;
+  }
+}
 const REPORT_SIZE = 0x4a0;
 const SIG_OFFSET = 0x2a0;
 const SIG_COMPONENT_SIZE = 72;
@@ -146,13 +194,16 @@ async function fetchVcek(
   product: string,
   chipId: Buffer,
   reportedTcb: TcbVersion,
+  reloadAmdKds = false,
 ): Promise<{ der: Buffer; product: string }> {
   const candidates = product ? [product] : ["Genoa", "Milan", "Turin"];
   for (const name of candidates) {
     const cacheKey = vcekCacheKey(name, chipId, reportedTcb);
-    const cached = kdsCache.get("vcek", cacheKey);
-    if (cached) {
-      return { der: cached, product: name };
+    if (!reloadAmdKds) {
+      const cached = kdsCache.get("vcek", cacheKey);
+      if (cached) {
+        return { der: cached, product: name };
+      }
     }
     const url = vcekUrl(name, chipId, reportedTcb);
     let resp: Response;
@@ -188,9 +239,11 @@ async function fetchVcek(
   );
 }
 
-async function fetchChainPem(product: string): Promise<string> {
-  const cached = kdsCache.get("cert_chain", product);
-  if (cached) return cached.toString("utf8");
+async function fetchChainPem(product: string, reloadAmdKds = false): Promise<string> {
+  if (!reloadAmdKds) {
+    const cached = kdsCache.get("cert_chain", product);
+    if (cached) return cached.toString("utf8");
+  }
   const url = `${AMD_KDS_BASE}/vcek/v1/${product}/cert_chain`;
   let resp: Response;
   try {
@@ -212,14 +265,18 @@ async function fetchChainPem(product: string): Promise<string> {
 
 /** Fetch the AMD VCEK CRL for a product, cache-first.
  *
- * The CRL is consulted to detect chips that AMD has revoked. We cache for
- * 7 days, matching AMD's typical CRL `nextUpdate` window. On network failure
- * we fall back to a stale cached entry rather than failing every SEV
- * verification while KDS is down.
+ * The CRL is consulted to detect chips that AMD has revoked. The cache TTL
+ * is computed from the CRL's own X.509 `nextUpdate` field, so the cache
+ * naturally aligns with AMD's published refresh schedule. If the CRL has no
+ * `nextUpdate` (rare) or parsing fails, we fall back to a 7-day TTL.
+ * On network failure we fall back to a stale cached entry rather than
+ * failing every SEV verification while KDS is down.
  */
-async function fetchCrl(product: string): Promise<Buffer> {
-  const cached = kdsCache.get("crl", product);
-  if (cached) return cached;
+async function fetchCrl(product: string, reloadAmdKds = false): Promise<Buffer> {
+  if (!reloadAmdKds) {
+    const cached = kdsCache.get("crl", product);
+    if (cached) return cached;
+  }
   const url = `${AMD_KDS_BASE}/vcek/v1/${product}/crl`;
   let resp: Response;
   try {
@@ -235,7 +292,17 @@ async function fetchCrl(product: string): Promise<Buffer> {
     throw new Error(`AMD KDS crl returned ${resp.status}`);
   }
   const der = Buffer.from(await resp.arrayBuffer());
-  kdsCache.put("crl", product, der, kdsCache.TTL_CRL_SECONDS);
+
+  // Use the CRL's own nextUpdate as the TTL when available; fall back to
+  // the 7-day default when it's missing or parsing fails.
+  let ttl = kdsCache.TTL_CRL_SECONDS;
+  const nextUpdate = parseCrlNextUpdate(der);
+  if (nextUpdate) {
+    const seconds = Math.floor((nextUpdate.getTime() - Date.now()) / 1000);
+    if (seconds > 0) ttl = seconds;
+  }
+
+  kdsCache.put("crl", product, der, ttl);
   return der;
 }
 
@@ -322,6 +389,7 @@ function verifyReportSignature(
 export async function checkSevCpuAttestation(
   dataOrUrl: string,
   product = "",
+  reloadAmdKds = false,
 ): Promise<AttestationResult> {
   const data = isVmUrl(dataOrUrl) ? await fetchCpuQuote(dataOrUrl) : dataOrUrl;
   const errors: string[] = [];
@@ -354,7 +422,7 @@ export async function checkSevCpuAttestation(
   let vcekDer: Buffer;
   let detectedProduct: string;
   try {
-    const result = await fetchVcek(product, rpt.chipId, rpt.reportedTcb);
+    const result = await fetchVcek(product, rpt.chipId, rpt.reportedTcb, reloadAmdKds);
     vcekDer = result.der;
     detectedProduct = result.product;
     checks.vcek_fetched = true;
@@ -366,7 +434,7 @@ export async function checkSevCpuAttestation(
 
   // Verify cert chain (VCEK -> ASK -> ARK)
   try {
-    const chainPem = await fetchChainPem(detectedProduct);
+    const chainPem = await fetchChainPem(detectedProduct, reloadAmdKds);
     checks.cert_chain_valid = verifyCertChain(vcekDer, chainPem);
     if (!checks.cert_chain_valid) {
       errors.push(
@@ -381,7 +449,7 @@ export async function checkSevCpuAttestation(
   // CRL revocation check — fetch the AMD VCEK CRL and confirm the leaf
   // cert's serial number is not in the revoked list. Cached for 7 days.
   try {
-    const crlDer = await fetchCrl(detectedProduct);
+    const crlDer = await fetchCrl(detectedProduct, reloadAmdKds);
     checks.crl_check_passed = checkVcekRevocation(vcekDer, crlDer);
     if (!checks.crl_check_passed) {
       const cert = new crypto.X509Certificate(vcekDer);

@@ -204,7 +204,10 @@ def resolve_agent(agent_id: int, chain: str) -> AgentMetadata:
     )
 
 
-def verify_agent(metadata: AgentMetadata) -> AttestationResult:
+def verify_agent(
+    metadata: AgentMetadata,
+    reload_amd_kds: bool = False,
+) -> AttestationResult:
     """Verify an ERC-8004 agent given its metadata.
 
     Discovers teequote and workload endpoints from the metadata, then runs
@@ -213,6 +216,8 @@ def verify_agent(metadata: AgentMetadata) -> AttestationResult:
 
     Args:
         metadata: AgentMetadata with name, services, and supported_trust.
+        reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
+            VCEK / cert chain / CRL. No effect on TDX agents.
 
     Returns:
         AttestationResult with attestation_type="ERC-8004".
@@ -287,7 +292,7 @@ def verify_agent(metadata: AgentMetadata) -> AttestationResult:
             checks=checks, report=report, errors=errors,
         )
 
-    cpu_result = check_cpu_attestation(cpu_data)
+    cpu_result = check_cpu_attestation(cpu_data, reload_amd_kds=reload_amd_kds)
     checks["cpu_attestation_valid"] = cpu_result.valid
     # Propagate the inner DCAP/QVL verification verdict for prominent display.
     if "quote_verified" in cpu_result.checks:
@@ -392,7 +397,11 @@ def verify_agent(metadata: AgentMetadata) -> AttestationResult:
     )
 
 
-def check_agent(agent_id: int, chain: str) -> AttestationResult:
+def check_agent(
+    agent_id: int,
+    chain: str,
+    reload_amd_kds: bool = False,
+) -> AttestationResult:
     """End-to-end ERC-8004 agent verification.
 
     Resolves the agent's metadata from the on-chain registry, then runs
@@ -401,6 +410,8 @@ def check_agent(agent_id: int, chain: str) -> AttestationResult:
     Args:
         agent_id: The agent's on-chain token ID.
         chain: Chain name (e.g. "base", "ethereum", "arbitrum").
+        reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
+            VCEK / cert chain / CRL. No effect on TDX agents.
 
     Returns:
         AttestationResult with attestation_type="ERC-8004".
@@ -414,25 +425,32 @@ def check_agent(agent_id: int, chain: str) -> AttestationResult:
             errors=[f"Failed to resolve agent: {e}"],
         )
 
-    result = verify_agent(metadata)
+    result = verify_agent(metadata, reload_amd_kds=reload_amd_kds)
     result.checks = {"agent_resolved": True, **result.checks}
     return result
 
 
-async def verify_agent_async(metadata: AgentMetadata) -> AttestationResult:
+async def verify_agent_async(
+    metadata: AgentMetadata,
+    reload_amd_kds: bool = False,
+) -> AttestationResult:
     """Async variant of :func:`verify_agent`.
 
     Use this from inside an event loop. The current implementation offloads
     the synchronous wrapper to a thread pool via :func:`asyncio.to_thread`.
     """
-    return await asyncio.to_thread(verify_agent, metadata)
+    return await asyncio.to_thread(verify_agent, metadata, reload_amd_kds)
 
 
-async def check_agent_async(agent_id: int, chain: str) -> AttestationResult:
+async def check_agent_async(
+    agent_id: int,
+    chain: str,
+    reload_amd_kds: bool = False,
+) -> AttestationResult:
     """Async variant of :func:`check_agent`.
 
     Use this from inside an event loop. The current implementation offloads
     the synchronous wrapper (on-chain resolution + TEE verification) to a
     thread pool via :func:`asyncio.to_thread`.
     """
-    return await asyncio.to_thread(check_agent, agent_id, chain)
+    return await asyncio.to_thread(check_agent, agent_id, chain, reload_amd_kds)

@@ -38,10 +38,14 @@ export function detectCpuQuoteType(data: string): "TDX" | "SEV-SNP" | "unknown" 
 
 /**
  * Verify a CPU attestation quote, auto-detecting Intel TDX vs AMD SEV-SNP.
+ *
+ * @param reloadAmdKds If true, bypass the local AMD KDS cache and re-fetch
+ *   VCEK / cert chain / CRL. No effect on the TDX path (which doesn't cache).
  */
 export async function checkCpuAttestation(
   dataOrUrl: string,
   product = "",
+  reloadAmdKds = false,
 ): Promise<AttestationResult> {
   const data = isVmUrl(dataOrUrl) ? await fetchCpuQuote(dataOrUrl) : dataOrUrl;
   const quoteType = detectCpuQuoteType(data);
@@ -50,7 +54,7 @@ export async function checkCpuAttestation(
     return checkTdxCpuAttestation(data);
   }
   if (quoteType === "SEV-SNP") {
-    return checkSevCpuAttestation(data, product);
+    return checkSevCpuAttestation(data, product, reloadAmdKds);
   }
 
   return makeResult("unknown", {

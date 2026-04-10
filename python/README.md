@@ -248,10 +248,71 @@ The library contacts these services during verification:
 | Service | Used by | Purpose |
 |---------|---------|---------|
 | [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains) |
-| [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate and cert chain |
+| [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate, AMD CA cert chain (ASK + ARK), CRL |
 | [NVIDIA NRAS](https://nras.attestation.nvidia.com) | GPU | GPU attestation verification |
 
-**Note:** AMD KDS has rate limits. If you encounter 429 errors, specify the `product` parameter to reduce the number of requests.
+## AMD KDS caching
+
+To minimize calls to `kdsintf.amd.com` (which is rate-limited and returns HTTP 429 under load) the AMD SEV-SNP verifier caches all three KDS responses to disk. The cache is on by default; nothing to enable.
+
+| Item | TTL | Cache key |
+|---|---|---|
+| VCEK certificate | 30 days | `(product, chip_id, ucode_SPL, snp_SPL, tee_SPL, bl_SPL)` — full TCB tuple |
+| AMD CA cert chain (ASK + ARK) | 30 days | `product` |
+| CRL | from the CRL's own X.509 `nextUpdate` field (typically ~7 months for AMD); falls back to 7 days if `nextUpdate` is missing or unparseable | `product` |
+
+The VCEK cache key includes the full TCB tuple because AMD issues a distinct VCEK per `(chip, TCB version)`. A microcode update on the same chip becomes a cache miss with the new key, fetching the updated VCEK as expected.
+
+**Cache location.** Default `~/.cache/secretvm-verify/amd/`. Override with the `SECRETVM_VERIFY_CACHE_DIR` environment variable; the library appends `/amd` to whatever you set:
+
+```sh
+export SECRETVM_VERIFY_CACHE_DIR=/var/cache/myapp
+# → entries land in /var/cache/myapp/amd/{vcek,cert_chain,crl}/
+```
+
+Each cached entry is two files: the payload (DER bytes for VCEK and CRL, PEM text for the cert chain) and a sidecar `<name>.expires` containing the Unix-epoch expiration time.
+
+**Inspect cached entries:**
+
+```sh
+ls -lR ~/.cache/secretvm-verify/amd/
+
+# Decode a specific VCEK
+openssl x509 -in ~/.cache/secretvm-verify/amd/vcek/<file> -inform DER -text -noout
+
+# Decode the CRL — see revoked serials and nextUpdate
+openssl crl -in ~/.cache/secretvm-verify/amd/crl/Genoa -inform DER -text -noout
+```
+
+**Network failure fallback.** If AMD KDS is unreachable or returns an error, the cache falls back to a stale entry rather than failing the verification. Better to verify with a slightly old CRL than to fail every SEV-SNP attestation while KDS is down.
+
+**Force a refresh** (skip the cache for this call, fetch fresh, write back to cache):
+
+CLI:
+```sh
+python check_vm.py <url> --reload-amd-kds
+```
+
+Programmatic — pass `reload_amd_kds=True`:
+
+```python
+result = check_sev_cpu_attestation(quote, product="Genoa", reload_amd_kds=True)
+result = check_secret_vm(url, reload_amd_kds=True)
+result = check_cpu_attestation(quote, product="Genoa", reload_amd_kds=True)
+result = check_agent(agent_id, "base", reload_amd_kds=True)
+
+# Async variants accept the same parameter
+result = await check_sev_cpu_attestation_async(quote, product="Genoa", reload_amd_kds=True)
+result = await check_secret_vm_async(url, reload_amd_kds=True)
+```
+
+The `reload_amd_kds` parameter has no effect on Intel TDX verification (TDX doesn't cache; the upstream [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) library manages its own ephemeral state).
+
+**To clear the cache entirely:**
+
+```sh
+rm -rf ~/.cache/secretvm-verify/amd
+```
 
 ## Requirements
 

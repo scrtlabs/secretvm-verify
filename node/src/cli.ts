@@ -41,6 +41,9 @@ const vmUrl = getFlagValue("--vm");
 // fields. Other modes (--cpu, --tdx, --sev, --gpu, etc.) keep their
 // detailed default output.
 const isSecretvm = getFlag("--secretvm");
+// `--reload-amd-kds` bypasses the local AMD KDS cache and re-fetches
+// VCEK, AMD CA cert chain, and CRL from kdsintf.amd.com. No effect on TDX.
+const reloadAmdKds = getFlag("--reload-amd-kds");
 
 const SECRET_VM_PORT = 29343;
 
@@ -103,6 +106,8 @@ Options:
   --product NAME       AMD product name (Genoa, Milan, Turin)
   --raw                Output raw JSON result
   --verbose, -v        Print all attestation report fields
+  --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
+                       cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
 
 Examples:
   secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
@@ -146,12 +151,12 @@ if (getFlag("--secretvm")) {
     process.exit(1);
   }
   if (!raw) console.log(`Checking attestation for ${url} ...\n`);
-  result = await checkSecretVm(url, product);
+  result = await checkSecretVm(url, product, reloadAmdKds);
 } else if (getFlag("--cpu")) {
   const quoteData = await getCpuQuote("--cpu");
   const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
   if (!raw) console.log(`Verifying CPU quote from ${source} ...\n`);
-  result = await checkCpuAttestation(quoteData, product);
+  result = await checkCpuAttestation(quoteData, product, reloadAmdKds);
 } else if (getFlag("--tdx")) {
   const quoteData = await getCpuQuote("--tdx");
   const source = vmUrl ? vmUrl : getFlagValue("--tdx") ?? getPositional();
@@ -161,7 +166,7 @@ if (getFlag("--secretvm")) {
   const quoteData = await getCpuQuote("--sev");
   const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
   if (!raw) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
-  result = await checkSevCpuAttestation(quoteData, product);
+  result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
 } else if (getFlag("--gpu")) {
   const quoteData = await getGpuQuote("--gpu");
   const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
@@ -172,7 +177,7 @@ if (getFlag("--secretvm")) {
   const quoteType = detectCpuQuoteType(quoteData);
   if (quoteType === "SEV-SNP") {
     // Step 1: cryptographic quote verification
-    const quoteResult = await checkSevCpuAttestation(quoteData, product);
+    const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
     // Step 2: registry lookup
     const version = await resolveAmdSevVersion(quoteData);
     if (raw) {
@@ -224,7 +229,7 @@ if (getFlag("--secretvm")) {
   const quoteType = detectCpuQuoteType(quoteData);
   if (quoteType === "SEV-SNP") {
     // Step 1: cryptographic quote verification
-    const quoteResult = await checkSevCpuAttestation(quoteData, product);
+    const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
     if (raw) {
       const workloadResult = await verifyWorkload(quoteData, composeData);
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
@@ -273,7 +278,7 @@ if (getFlag("--secretvm")) {
     process.exit(1);
   }
   if (!raw) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
-  result = await checkAgent(Number(id), chain);
+  result = await checkAgent(Number(id), chain, reloadAmdKds);
 } else if (getFlag("--agent")) {
   const file = getFlagValue("--agent") ?? getPositional();
   if (!file) {
@@ -282,7 +287,7 @@ if (getFlag("--secretvm")) {
   }
   const metadata = JSON.parse(readFileSync(file, "utf8"));
   if (!raw) console.log(`Verifying agent "${metadata.name}" ...\n`);
-  result = await verifyAgent(metadata);
+  result = await verifyAgent(metadata, reloadAmdKds);
 } else {
   // Legacy: bare URL defaults to --secretvm
   const url = getPositional();
@@ -291,7 +296,7 @@ if (getFlag("--secretvm")) {
     process.exit(1);
   }
   if (!raw) console.log(`Checking attestation for ${url} ...\n`);
-  result = await checkSecretVm(url, product);
+  result = await checkSecretVm(url, product, reloadAmdKds);
 }
 
 // Output

@@ -61,7 +61,11 @@ def _get_pkg():
     return sys.modules["secretvm.verify"]
 
 
-def check_secret_vm(url: str, product: str = "") -> AttestationResult:
+def check_secret_vm(
+    url: str,
+    product: str = "",
+    reload_amd_kds: bool = False,
+) -> AttestationResult:
     """Verify a Secret VM by fetching CPU and GPU attestation from its endpoints.
 
     Connects to the VM's attestation service at <url>:29343, fetches the CPU
@@ -73,6 +77,8 @@ def check_secret_vm(url: str, product: str = "") -> AttestationResult:
     Args:
         url: VM address (e.g. "https://host:29343", "host:29343", or just "host").
         product: AMD product name (only used for SEV-SNP). Auto-detected if empty.
+        reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
+            VCEK / cert chain / CRL. No effect on TDX VMs (TDX doesn't cache).
 
     Returns:
         AttestationResult with attestation_type="SECRET-VM".
@@ -114,7 +120,9 @@ def check_secret_vm(url: str, product: str = "") -> AttestationResult:
             checks=checks, report=report, errors=errors,
         )
 
-    cpu_result = pkg.check_cpu_attestation(cpu_data, product=product)
+    cpu_result = pkg.check_cpu_attestation(
+        cpu_data, product=product, reload_amd_kds=reload_amd_kds,
+    )
     checks["cpu_attestation_valid"] = cpu_result.valid
     # Propagate the inner DCAP/QVL verification verdict so callers (and the CLI)
     # can surface it prominently. Only TDX currently uses dcap-qvl; SEV results
@@ -221,7 +229,11 @@ def check_secret_vm(url: str, product: str = "") -> AttestationResult:
     )
 
 
-async def check_secret_vm_async(url: str, product: str = "") -> AttestationResult:
+async def check_secret_vm_async(
+    url: str,
+    product: str = "",
+    reload_amd_kds: bool = False,
+) -> AttestationResult:
     """Async variant of :func:`check_secret_vm`.
 
     Use this from inside an event loop. The current implementation offloads
@@ -231,4 +243,4 @@ async def check_secret_vm_async(url: str, product: str = "") -> AttestationResul
     parallelize the four fetches for additional speedup, but the simple
     wrapper is sufficient to use the API from async contexts today.
     """
-    return await asyncio.to_thread(check_secret_vm, url, product)
+    return await asyncio.to_thread(check_secret_vm, url, product, reload_amd_kds)

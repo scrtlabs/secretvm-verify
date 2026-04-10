@@ -304,15 +304,73 @@ The library contacts these services during verification:
 | Service | Used by | Purpose |
 |---------|---------|---------|
 | [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains) |
-| [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate and cert chain |
+| [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate, AMD CA cert chain (ASK + ARK), CRL |
 | [NVIDIA NRAS](https://nras.attestation.nvidia.com) | GPU | GPU attestation verification |
 
-**Note:** AMD KDS has rate limits. If you encounter 429 errors, specify the `product` parameter to reduce the number of requests.
+## AMD KDS caching
+
+To minimize calls to `kdsintf.amd.com` (which is rate-limited and returns HTTP 429 under load) the AMD SEV-SNP verifier caches all three KDS responses to disk. The cache is on by default; nothing to enable.
+
+| Item | TTL | Cache key |
+|---|---|---|
+| VCEK certificate | 30 days | `(product, chip_id, ucode_SPL, snp_SPL, tee_SPL, bl_SPL)` — full TCB tuple |
+| AMD CA cert chain (ASK + ARK) | 30 days | `product` |
+| CRL | from the CRL's own X.509 `nextUpdate` field (typically ~7 months for AMD); falls back to 7 days if `nextUpdate` is missing or unparseable | `product` |
+
+The VCEK cache key includes the full TCB tuple because AMD issues a distinct VCEK per `(chip, TCB version)`. A microcode update on the same chip becomes a cache miss with the new key, fetching the updated VCEK as expected.
+
+**Cache location.** Default `~/.cache/secretvm-verify/amd/`. Override with the `SECRETVM_VERIFY_CACHE_DIR` environment variable; the library appends `/amd` to whatever you set:
+
+```sh
+export SECRETVM_VERIFY_CACHE_DIR=/var/cache/myapp
+# → entries land in /var/cache/myapp/amd/{vcek,cert_chain,crl}/
+```
+
+Each cached entry is two files: the payload (DER bytes for VCEK and CRL, PEM text for the cert chain) and a sidecar `<name>.expires` containing the Unix-epoch expiration time.
+
+**Inspect cached entries:**
+
+```sh
+ls -lR ~/.cache/secretvm-verify/amd/
+
+# Decode a specific VCEK
+openssl x509 -in ~/.cache/secretvm-verify/amd/vcek/<file> -inform DER -text -noout
+
+# Decode the CRL — see revoked serials and nextUpdate
+openssl crl -in ~/.cache/secretvm-verify/amd/crl/Genoa -inform DER -text -noout
+```
+
+**Network failure fallback.** If AMD KDS is unreachable or returns an error, the cache falls back to a stale entry rather than failing the verification. Better to verify with a slightly old CRL than to fail every SEV-SNP attestation while KDS is down.
+
+**Force a refresh** (skip the cache for this call, fetch fresh, write back to cache):
+
+CLI:
+```sh
+secretvm-verify --secretvm <url> --reload-amd-kds
+secretvm-verify --sev <quote.txt> --product Genoa --reload-amd-kds
+```
+
+Programmatic — pass `true` as the third argument:
+
+```js
+const result = await checkSevCpuAttestation(quote, "Genoa", /* reloadAmdKds */ true);
+const result = await checkSecretVm(url, "", /* reloadAmdKds */ true);
+const result = await checkCpuAttestation(quote, "Genoa", /* reloadAmdKds */ true);
+const result = await checkAgent(agentId, "base", /* reloadAmdKds */ true);
+```
+
+The `--reload-amd-kds` flag has no effect on Intel TDX verification (TDX doesn't cache; the upstream `@teekit/qvl` library manages its own ephemeral state).
+
+**To clear the cache entirely:**
+
+```sh
+rm -rf ~/.cache/secretvm-verify/amd
+```
 
 ## Requirements
 
 - Node.js >= 18 (uses built-in `crypto`, `fetch`)
-- npm dependencies: [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (TDX quote verification), `ethers` (ERC-8004 agent resolution) — installed automatically.
+- npm dependencies: [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (TDX quote verification), [`asn1js`](https://www.npmjs.com/package/asn1js) (parses the CRL's `nextUpdate` field for cache TTL), `ethers` (ERC-8004 agent resolution) — installed automatically.
 
 No system-level dependencies. AMD SEV-SNP certificate chains (RSA-PSS) are verified natively via `node:crypto`.
 

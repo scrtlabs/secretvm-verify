@@ -150,9 +150,13 @@ export async function resolveAgent(
  * Discovers teequote and workload endpoints from the metadata, then runs
  * the full verification flow: TLS cert, CPU quote, TLS binding, GPU quote,
  * GPU binding, and workload verification.
+ *
+ * @param reloadAmdKds If true, bypass the local AMD KDS cache and re-fetch
+ *   VCEK / cert chain / CRL. No effect on TDX agents.
  */
 export async function verifyAgent(
   metadata: AgentMetadata,
+  reloadAmdKds = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -221,7 +225,7 @@ export async function verifyAgent(
     return makeResult("ERC-8004", { checks, report, errors });
   }
 
-  const cpuResult = await checkCpuAttestation(cpuData);
+  const cpuResult = await checkCpuAttestation(cpuData, "", reloadAmdKds);
   checks.cpu_attestation_valid = cpuResult.valid;
   // Propagate the inner DCAP/QVL verification verdict for prominent display.
   if (cpuResult.checks.quote_verified !== undefined) {
@@ -338,10 +342,14 @@ export async function verifyAgent(
  *
  * Resolves the agent's metadata from the on-chain registry, then runs
  * the full verification flow via verifyAgent.
+ *
+ * @param reloadAmdKds If true, bypass the local AMD KDS cache and re-fetch
+ *   VCEK / cert chain / CRL. No effect on TDX agents.
  */
 export async function checkAgent(
   agentId: number,
   chain: string,
+  reloadAmdKds = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -356,7 +364,7 @@ export async function checkAgent(
     return makeResult("ERC-8004", { checks, errors });
   }
 
-  const result = await verifyAgent(metadata);
+  const result = await verifyAgent(metadata, reloadAmdKds);
   result.checks = { agent_resolved: true, ...result.checks };
 
   return result;
