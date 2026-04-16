@@ -5,6 +5,7 @@ export { checkSevCpuAttestation } from "./amd.js";
 export { checkNvidiaGpuAttestation } from "./nvidia.js";
 export { checkCpuAttestation, detectCpuQuoteType } from "./cpu.js";
 export { checkSecretVm } from "./vm.js";
+export { checkProofOfCloud } from "./proofOfCloud.js";
 export {
     resolveSecretVmVersion,
     resolveAmdSevVersion,

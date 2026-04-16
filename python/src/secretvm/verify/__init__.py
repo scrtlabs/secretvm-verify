@@ -41,6 +41,9 @@ from .cpu import check_cpu_attestation, check_cpu_attestation_async
 # NVIDIA GPU
 from .nvidia import check_nvidia_gpu_attestation, check_nvidia_gpu_attestation_async
 
+# Proof of cloud (SCRT Labs quote-parse)
+from .proof_of_cloud import check_proof_of_cloud, check_proof_of_cloud_async
+
 # Secret VM
 # Public API
 from .vm import check_secret_vm, check_secret_vm_async
@@ -89,6 +92,9 @@ __all__ = [
     # VM
     "check_secret_vm",
     "check_secret_vm_async",
+    # Proof of cloud
+    "check_proof_of_cloud",
+    "check_proof_of_cloud_async",
     # Workload
     "resolve_secretvm_version",
     "verify_tdx_workload",

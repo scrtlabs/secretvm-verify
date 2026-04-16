@@ -10,6 +10,7 @@ import {
   checkNvidiaGpuAttestation,
   checkCpuAttestation,
   checkSecretVm,
+  checkProofOfCloud,
 } from "./index.js";
 import type { AttestationResult } from "./types.js";
 import { parseVmUrl } from "./vm.js";
@@ -265,7 +266,7 @@ describe("checkSecretVm", () => {
     const result = await checkSecretVm("https://192.0.2.1:29343");
     assert.equal(result.valid, false);
     assert.equal(result.attestationType, "SECRET-VM");
-    assert.equal(result.checks.tls_cert_obtained, false);
+    assert.equal(result.checks.tls_cert_fetched, false);
     assert.ok(result.errors.length > 0);
   });
 
@@ -351,5 +352,109 @@ describe("checkSecretVm", () => {
       const secondHalf = reportData.slice(64, 128);
       assert.equal(secondHalf, nonceHex);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Proof of cloud
+// ---------------------------------------------------------------------------
+
+describe("checkProofOfCloud", () => {
+  const originalFetch = globalThis.fetch;
+
+  function mockFetch(impl: typeof fetch): void {
+    (globalThis as any).fetch = impl;
+  }
+
+  function restoreFetch(): void {
+    (globalThis as any).fetch = originalFetch;
+  }
+
+  it("returns PASS when endpoint confirms proof_of_cloud", async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({
+          proof_of_cloud: true,
+          origin: "scrt",
+          status: { attestation_type: "tdx", result: "0", exp_status: "0" },
+          quote: { machine_id: "abc123" },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    try {
+      const result = await checkProofOfCloud("fake-quote");
+      assert.equal(result.valid, true);
+      assert.equal(result.checks.proof_of_cloud_verified, true);
+      assert.equal(result.report.proof_of_cloud.origin, "scrt");
+      assert.equal(result.report.proof_of_cloud.machine_id, "abc123");
+      assert.deepEqual(result.errors, []);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("returns FAIL when endpoint reports proof_of_cloud=false", async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({ proof_of_cloud: false, origin: null }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    try {
+      const result = await checkProofOfCloud("fake-quote");
+      assert.equal(result.valid, false);
+      assert.equal(result.checks.proof_of_cloud_verified, false);
+      assert.ok(result.errors.some((e) => e.includes("proof_of_cloud=false")));
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("returns FAIL when endpoint returns non-200", async () => {
+    mockFetch(async () =>
+      new Response("Internal Server Error", { status: 500 }),
+    );
+    try {
+      const result = await checkProofOfCloud("fake-quote");
+      assert.equal(result.valid, false);
+      assert.equal(result.checks.proof_of_cloud_verified, false);
+      assert.ok(result.errors.some((e) => e.includes("HTTP 500")));
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("returns FAIL on network error", async () => {
+    mockFetch(async () => {
+      throw new Error("ECONNREFUSED");
+    });
+    try {
+      const result = await checkProofOfCloud("fake-quote");
+      assert.equal(result.valid, false);
+      assert.equal(result.checks.proof_of_cloud_verified, false);
+      assert.ok(result.errors.some((e) => e.includes("ECONNREFUSED")));
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("posts the quote (trimmed) as JSON", async () => {
+    let captured: { url?: string; body?: unknown } = {};
+    mockFetch(async (url: any, init: any) => {
+      captured.url = String(url);
+      captured.body = JSON.parse(init?.body);
+      return new Response(
+        JSON.stringify({ proof_of_cloud: true, origin: "scrt" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    try {
+      await checkProofOfCloud("  raw-quote-text  \n");
+      assert.equal(captured.url, "https://secretai.scrtlabs.com/api/quote-parse");
+      assert.deepEqual(captured.body, { quote: "raw-quote-text" });
+    } finally {
+      restoreFetch();
+    }
   });
 });

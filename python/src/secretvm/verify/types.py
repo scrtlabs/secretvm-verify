@@ -13,6 +13,44 @@ class AttestationResult:
     errors: list = field(default_factory=list)
 
 
+# Canonical ordering for the per-check list. Keys are inserted into the final
+# `result.checks` dict in this order; any unlisted keys are appended at the end.
+_CHECK_ORDER = (
+    "metadata_valid",
+    "cpu_quote_fetched",
+    "tls_cert_fetched",
+    # TDX-specific detail keys
+    "quote_parsed",
+    "quote_verified",
+    # SEV-specific detail keys
+    "report_parsed",
+    "vcek_fetched",
+    "cert_chain_valid",
+    "crl_check_passed",
+    "report_signature_valid",
+    # VM-level rollup
+    "cpu_quote_verified",
+    "tls_binding_verified",
+    "gpu_quote_fetched",
+    "gpu_quote_verified",
+    "gpu_binding_verified",
+    "workload_fetched",
+    "workload_binding_verified",
+    "proof_of_cloud_verified",
+)
+
+
+def order_checks(checks: dict) -> dict:
+    out: dict = {}
+    for key in _CHECK_ORDER:
+        if key in checks:
+            out[key] = checks[key]
+    for key, value in checks.items():
+        if key not in out:
+            out[key] = value
+    return out
+
+
 @dataclass
 class WorkloadResult:
     """Result of a SecretVM workload verification."""

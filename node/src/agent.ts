@@ -1,9 +1,10 @@
 import { ethers } from "ethers";
 import { getChainConfig, getRpcUrl } from "./chains.js";
-import { AttestationResult, makeResult } from "./types.js";
+import { AttestationResult, makeResult, orderChecks } from "./types.js";
 import type { AgentMetadata, AgentService } from "./types.js";
 import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
+import { checkProofOfCloud } from "./proofOfCloud.js";
 import { verifyWorkload } from "./workload.js";
 import { extractDockerCompose, getTlsCertFingerprint } from "./url.js";
 
@@ -171,14 +172,14 @@ export async function verifyAgent(
   if (!hasTeeAttestation) {
     errors.push("Agent does not support tee-attestation");
     checks.metadata_valid = false;
-    return makeResult("ERC-8004", { checks, report, errors });
+    return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
   }
 
   const teequoteEndpoint = findTeequoteEndpoint(metadata.services);
   if (!teequoteEndpoint) {
     errors.push("No teequote service endpoint found in agent metadata");
     checks.metadata_valid = false;
-    return makeResult("ERC-8004", { checks, report, errors });
+    return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
   }
   checks.metadata_valid = true;
 
@@ -204,12 +205,12 @@ export async function verifyAgent(
   let tlsFingerprint: Buffer;
   try {
     tlsFingerprint = await getTlsCertFingerprint(host, port);
-    checks.tls_cert_obtained = true;
+    checks.tls_cert_fetched = true;
     report.tls_fingerprint = tlsFingerprint.toString("hex");
   } catch (e: any) {
     errors.push(`Failed to get TLS certificate: ${e.message}`);
-    checks.tls_cert_obtained = false;
-    return makeResult("ERC-8004", { checks, report, errors });
+    checks.tls_cert_fetched = false;
+    return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
   }
 
   // 4. Fetch and verify CPU quote
@@ -222,15 +223,11 @@ export async function verifyAgent(
   } catch (e: any) {
     errors.push(`Failed to fetch CPU quote: ${e.message}`);
     checks.cpu_quote_fetched = false;
-    return makeResult("ERC-8004", { checks, report, errors });
+    return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
   }
 
   const cpuResult = await checkCpuAttestation(cpuData, "", reloadAmdKds);
-  checks.cpu_attestation_valid = cpuResult.valid;
-  // Propagate the inner DCAP/QVL verification verdict for prominent display.
-  if (cpuResult.checks.quote_verified !== undefined) {
-    checks.cpu_quote_verified = cpuResult.checks.quote_verified;
-  }
+  checks.cpu_quote_verified = cpuResult.valid;
   report.cpu = cpuResult.report;
   report.cpu_type = cpuResult.attestationType;
   if (!cpuResult.valid) errors.push(...cpuResult.errors);
@@ -239,15 +236,15 @@ export async function verifyAgent(
   const reportDataHex: string = cpuResult.report.report_data ?? "";
   if (reportDataHex.length >= 64) {
     const firstHalf = reportDataHex.slice(0, 64);
-    checks.tls_binding = firstHalf === tlsFingerprint.toString("hex");
-    if (!checks.tls_binding) {
+    checks.tls_binding_verified = firstHalf === tlsFingerprint.toString("hex");
+    if (!checks.tls_binding_verified) {
       errors.push(
         `TLS binding failed: report_data first half (${firstHalf.slice(0, 16)}...) ` +
           `!= TLS fingerprint (${tlsFingerprint.toString("hex").slice(0, 16)}...)`,
       );
     }
   } else {
-    checks.tls_binding = false;
+    checks.tls_binding_verified = false;
     errors.push("report_data too short for TLS binding check");
   }
 
@@ -274,7 +271,7 @@ export async function verifyAgent(
 
   if (gpuPresent) {
     const gpuResult = await checkNvidiaGpuAttestation(gpuData);
-    checks.gpu_attestation_valid = gpuResult.valid;
+    checks.gpu_quote_verified = gpuResult.valid;
     report.gpu = gpuResult.report;
     if (!gpuResult.valid) errors.push(...gpuResult.errors);
 
@@ -282,15 +279,15 @@ export async function verifyAgent(
     const gpuNonce: string = gpuJson.nonce ?? "";
     if (reportDataHex.length >= 128) {
       const secondHalf = reportDataHex.slice(64, 128);
-      checks.gpu_binding = secondHalf === gpuNonce;
-      if (!checks.gpu_binding) {
+      checks.gpu_binding_verified = secondHalf === gpuNonce;
+      if (!checks.gpu_binding_verified) {
         errors.push(
           `GPU binding failed: report_data second half (${secondHalf.slice(0, 16)}...) ` +
             `!= GPU nonce (${gpuNonce.slice(0, 16)}...)`,
         );
       }
     } else {
-      checks.gpu_binding = false;
+      checks.gpu_binding_verified = false;
       errors.push("report_data too short for GPU binding check");
     }
   }
@@ -303,7 +300,7 @@ export async function verifyAgent(
     checks.workload_fetched = true;
 
     const workloadResult = await verifyWorkload(cpuData, dockerCompose);
-    checks.workload_verified = workloadResult.status === "authentic_match";
+    checks.workload_binding_verified = workloadResult.status === "authentic_match";
     report.workload = workloadResult;
     if (workloadResult.status === "authentic_mismatch") {
       errors.push("Workload mismatch: VM is authentic but docker-compose does not match");
@@ -315,22 +312,33 @@ export async function verifyAgent(
     checks.workload_fetched = false;
   }
 
+  // 8. Proof of cloud: confirm the quote was produced on a Secret VM.
+  const pocResult = await checkProofOfCloud(cpuData);
+  checks.proof_of_cloud_verified = pocResult.valid;
+  if (pocResult.report.proof_of_cloud !== undefined) {
+    report.proof_of_cloud = pocResult.report.proof_of_cloud;
+  }
+  if (!pocResult.valid) {
+    errors.push(...pocResult.errors);
+  }
+
   // Overall validity
   const requiredChecks = [
     checks.metadata_valid,
-    checks.tls_cert_obtained,
+    checks.tls_cert_fetched,
     checks.cpu_quote_fetched,
-    checks.cpu_attestation_valid,
-    checks.tls_binding,
-    !!checks.workload_verified,
+    checks.cpu_quote_verified,
+    checks.tls_binding_verified,
+    !!checks.workload_binding_verified,
+    !!checks.proof_of_cloud_verified,
   ];
   if (gpuPresent) {
-    requiredChecks.push(!!checks.gpu_attestation_valid);
-    requiredChecks.push(!!checks.gpu_binding);
+    requiredChecks.push(!!checks.gpu_quote_verified);
+    requiredChecks.push(!!checks.gpu_binding_verified);
   }
   const valid = requiredChecks.every(Boolean);
 
-  return makeResult("ERC-8004", { valid, checks, report, errors });
+  return makeResult("ERC-8004", { valid, checks: orderChecks(checks), report, errors });
 }
 
 // ---------------------------------------------------------------------------
@@ -361,7 +369,7 @@ export async function checkAgent(
   } catch (e: any) {
     errors.push(`Failed to resolve agent: ${e.message}`);
     checks.agent_resolved = false;
-    return makeResult("ERC-8004", { checks, errors });
+    return makeResult("ERC-8004", { checks: orderChecks(checks), errors });
   }
 
   const result = await verifyAgent(metadata, reloadAmdKds);

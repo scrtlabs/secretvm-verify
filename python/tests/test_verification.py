@@ -302,8 +302,13 @@ def _make_test_data(tls_hex="aa" * 32, nonce_hex="bb" * 32):
         status="authentic_match", template_name="small",
         artifacts_ver="v0.0.25", env="prod",
     )
+    poc_pass = AttestationResult(
+        valid=True, attestation_type="PROOF-OF-CLOUD",
+        checks={"proof_of_cloud_verified": True},
+        report={"proof_of_cloud": {"origin": "scrt", "proof_of_cloud": True}},
+    )
 
-    return tls_fp, cpu_result, gpu_result, gpu_json, no_gpu_json, workload_pass
+    return tls_fp, cpu_result, gpu_result, gpu_json, no_gpu_json, workload_pass, poc_pass
 
 
 class TestSecretVm:
@@ -311,7 +316,7 @@ class TestSecretVm:
         result = check_secret_vm("https://192.0.2.1:29343")
         assert result.valid is False
         assert result.attestation_type == "SECRET-VM"
-        assert result.checks.get("tls_cert_obtained") is False
+        assert result.checks.get("tls_cert_fetched") is False
         assert len(result.errors) > 0
 
     def test_invalid_url(self):
@@ -327,12 +332,13 @@ class TestSecretVm:
         assert _parse_vm_url("https://myhost") == ("myhost", 29343)
 
     def test_vm_with_gpu_all_pass(self):
-        tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass = _make_test_data()
+        tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass, poc_pass = _make_test_data()
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
@@ -343,22 +349,24 @@ class TestSecretVm:
 
         assert result.valid is True
         assert result.attestation_type == "SECRET-VM"
-        assert result.checks["tls_cert_obtained"] is True
+        assert result.checks["tls_cert_fetched"] is True
         assert result.checks["cpu_quote_fetched"] is True
-        assert result.checks["cpu_attestation_valid"] is True
-        assert result.checks["tls_binding"] is True
+        assert result.checks["cpu_quote_verified"] is True
+        assert result.checks["tls_binding_verified"] is True
         assert result.checks["gpu_quote_fetched"] is True
-        assert result.checks["gpu_attestation_valid"] is True
-        assert result.checks["gpu_binding"] is True
-        assert result.checks["workload_verified"] is True
+        assert result.checks["gpu_quote_verified"] is True
+        assert result.checks["gpu_binding_verified"] is True
+        assert result.checks["workload_binding_verified"] is True
+        assert result.checks["proof_of_cloud_verified"] is True
         assert result.errors == []
 
     def test_vm_without_gpu(self):
-        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass = _make_test_data()
+        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
@@ -368,20 +376,25 @@ class TestSecretVm:
             result = check_secret_vm("https://test-vm:29343")
 
         assert result.valid is True
-        assert result.checks["tls_binding"] is True
+        assert result.checks["tls_binding_verified"] is True
         assert result.checks["gpu_quote_fetched"] is False
-        assert "gpu_attestation_valid" not in result.checks
-        assert "gpu_binding" not in result.checks
-        assert result.checks["workload_verified"] is True
+        assert "gpu_quote_verified" not in result.checks
+        assert "gpu_binding_verified" not in result.checks
+        assert result.checks["workload_binding_verified"] is True
+        assert result.checks["proof_of_cloud_verified"] is True
 
-    def test_tls_binding_failure(self):
-        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass = _make_test_data()
-        # Use wrong TLS fingerprint
-        wrong_tls = bytes.fromhex("ff" * 32)
-
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=wrong_tls), \
+    def test_proof_of_cloud_failure(self):
+        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, _ = _make_test_data()
+        poc_fail = AttestationResult(
+            valid=False, attestation_type="PROOF-OF-CLOUD",
+            checks={"proof_of_cloud_verified": False},
+            report={"proof_of_cloud": {"origin": None, "proof_of_cloud": False}},
+            errors=["Proof-of-cloud endpoint reported proof_of_cloud=false"],
+        )
+        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.check_proof_of_cloud", return_value=poc_fail), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
@@ -391,11 +404,32 @@ class TestSecretVm:
             result = check_secret_vm("https://test-vm:29343")
 
         assert result.valid is False
-        assert result.checks["tls_binding"] is False
+        assert result.checks["proof_of_cloud_verified"] is False
+        assert any("proof_of_cloud" in e.lower() or "Proof-of-cloud" in e for e in result.errors)
+
+    def test_tls_binding_failure(self):
+        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
+        # Use wrong TLS fingerprint
+        wrong_tls = bytes.fromhex("ff" * 32)
+
+        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=wrong_tls), \
+             patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
+             patch(f"{_M}.requests") as mock_req:
+            mock_req.get.side_effect = [
+                _mock_response("fake_cpu_quote"),
+                _mock_response(no_gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
+            ]
+            result = check_secret_vm("https://test-vm:29343")
+
+        assert result.valid is False
+        assert result.checks["tls_binding_verified"] is False
         assert any("TLS binding failed" in e for e in result.errors)
 
     def test_gpu_binding_failure(self):
-        tls_fp, cpu_result, gpu_result, _, _, workload_pass = _make_test_data()
+        tls_fp, cpu_result, gpu_result, _, _, workload_pass, poc_pass = _make_test_data()
         # GPU JSON with wrong nonce
         wrong_gpu_json = json.dumps({"nonce": "dd" * 32, "arch": "HOPPER", "evidence_list": []})
 
@@ -403,6 +437,7 @@ class TestSecretVm:
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
@@ -412,11 +447,11 @@ class TestSecretVm:
             result = check_secret_vm("https://test-vm:29343")
 
         assert result.valid is False
-        assert result.checks["gpu_binding"] is False
+        assert result.checks["gpu_binding_verified"] is False
         assert any("GPU binding failed" in e for e in result.errors)
 
     def test_cpu_attestation_failure(self):
-        tls_fp, _, _, _, no_gpu_json, workload_pass = _make_test_data()
+        tls_fp, _, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
         bad_cpu = AttestationResult(
             valid=False, attestation_type="TDX",
             checks={"quote_parsed": True, "quote_verified": False},
@@ -427,6 +462,7 @@ class TestSecretVm:
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=bad_cpu), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
@@ -436,10 +472,10 @@ class TestSecretVm:
             result = check_secret_vm("https://test-vm:29343")
 
         assert result.valid is False
-        assert result.checks["cpu_attestation_valid"] is False
+        assert result.checks["cpu_quote_verified"] is False
 
     def test_gpu_attestation_failure(self):
-        tls_fp, cpu_result, _, gpu_json, _, workload_pass = _make_test_data()
+        tls_fp, cpu_result, _, gpu_json, _, workload_pass, poc_pass = _make_test_data()
         bad_gpu = AttestationResult(
             valid=False, attestation_type="NVIDIA-GPU",
             checks={"platform_jwt_signature": False},
@@ -451,6 +487,7 @@ class TestSecretVm:
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=bad_gpu), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
              patch(f"{_M}.requests") as mock_req:
             mock_req.get.side_effect = [
                 _mock_response("fake_cpu_quote"),
@@ -460,7 +497,7 @@ class TestSecretVm:
             result = check_secret_vm("https://test-vm:29343")
 
         assert result.valid is False
-        assert result.checks["gpu_attestation_valid"] is False
+        assert result.checks["gpu_quote_verified"] is False
 
 
 # ---------------------------------------------------------------------------

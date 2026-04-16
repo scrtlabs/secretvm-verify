@@ -11,7 +11,7 @@ import requests
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509 import load_pem_x509_certificate
 
-from .types import AttestationResult
+from .types import AttestationResult, order_checks
 
 _SECRET_VM_PORT = 29343
 
@@ -96,14 +96,14 @@ def check_secret_vm(
     # 1. Get TLS certificate fingerprint
     try:
         tls_fingerprint = pkg._get_tls_cert_fingerprint(host, port)
-        checks["tls_cert_obtained"] = True
+        checks["tls_cert_fetched"] = True
         report["tls_fingerprint"] = tls_fingerprint.hex()
     except Exception as e:
         errors.append(f"Failed to get TLS certificate: {e}")
-        checks["tls_cert_obtained"] = False
+        checks["tls_cert_fetched"] = False
         return AttestationResult(
             valid=False, attestation_type="SECRET-VM",
-            checks=checks, report=report, errors=errors,
+            checks=order_checks(checks), report=report, errors=errors,
         )
 
     # 2. Fetch and verify CPU quote
@@ -117,18 +117,13 @@ def check_secret_vm(
         checks["cpu_quote_fetched"] = False
         return AttestationResult(
             valid=False, attestation_type="SECRET-VM",
-            checks=checks, report=report, errors=errors,
+            checks=order_checks(checks), report=report, errors=errors,
         )
 
     cpu_result = pkg.check_cpu_attestation(
         cpu_data, product=product, reload_amd_kds=reload_amd_kds,
     )
-    checks["cpu_attestation_valid"] = cpu_result.valid
-    # Propagate the inner DCAP/QVL verification verdict so callers (and the CLI)
-    # can surface it prominently. Only TDX currently uses dcap-qvl; SEV results
-    # don't populate this key.
-    if "quote_verified" in cpu_result.checks:
-        checks["cpu_quote_verified"] = cpu_result.checks["quote_verified"]
+    checks["cpu_quote_verified"] = cpu_result.valid
     report["cpu"] = cpu_result.report
     report["cpu_type"] = cpu_result.attestation_type
     if not cpu_result.valid:
@@ -138,14 +133,14 @@ def check_secret_vm(
     report_data_hex = cpu_result.report.get("report_data", "")
     if len(report_data_hex) >= 64:
         first_half = report_data_hex[:64]  # first 32 bytes as hex
-        checks["tls_binding"] = first_half == tls_fingerprint.hex()
-        if not checks["tls_binding"]:
+        checks["tls_binding_verified"] = first_half == tls_fingerprint.hex()
+        if not checks["tls_binding_verified"]:
             errors.append(
                 f"TLS binding failed: report_data first half ({first_half[:16]}...) "
                 f"!= TLS fingerprint ({tls_fingerprint.hex()[:16]}...)"
             )
     else:
-        checks["tls_binding"] = False
+        checks["tls_binding_verified"] = False
         errors.append("report_data too short for TLS binding check")
 
     # 4. Fetch and verify GPU quote (optional)
@@ -166,7 +161,7 @@ def check_secret_vm(
 
     if gpu_present:
         gpu_result = pkg.check_nvidia_gpu_attestation(gpu_data)
-        checks["gpu_attestation_valid"] = gpu_result.valid
+        checks["gpu_quote_verified"] = gpu_result.valid
         report["gpu"] = gpu_result.report
         if not gpu_result.valid:
             errors.extend(gpu_result.errors)
@@ -176,14 +171,14 @@ def check_secret_vm(
         gpu_nonce = gpu_json.get("nonce", "")
         if len(report_data_hex) >= 128:
             second_half = report_data_hex[64:128]  # second 32 bytes as hex
-            checks["gpu_binding"] = second_half == gpu_nonce
-            if not checks["gpu_binding"]:
+            checks["gpu_binding_verified"] = second_half == gpu_nonce
+            if not checks["gpu_binding_verified"]:
                 errors.append(
                     f"GPU binding failed: report_data second half ({second_half[:16]}...) "
                     f"!= GPU nonce ({gpu_nonce[:16]}...)"
                 )
         else:
-            checks["gpu_binding"] = False
+            checks["gpu_binding_verified"] = False
             errors.append("report_data too short for GPU binding check")
 
     # 6. Fetch and verify workload (docker-compose)
@@ -194,7 +189,7 @@ def check_secret_vm(
         checks["workload_fetched"] = True
 
         workload_result = pkg.verify_workload(cpu_data, docker_compose)
-        checks["workload_verified"] = workload_result.status == "authentic_match"
+        checks["workload_binding_verified"] = workload_result.status == "authentic_match"
         report["workload"] = {
             "status": workload_result.status,
             "template_name": workload_result.template_name,
@@ -209,23 +204,34 @@ def check_secret_vm(
         errors.append(f"Failed to fetch workload: {e}")
         checks["workload_fetched"] = False
 
+    # 7. Proof of cloud: ask SCRT Labs' quote-parse endpoint whether this
+    # quote came from a Secret VM. Non-fatal for overall validity if the
+    # endpoint is unreachable, but the check is surfaced in the output.
+    poc_result = pkg.check_proof_of_cloud(cpu_data)
+    checks["proof_of_cloud_verified"] = poc_result.valid
+    if poc_result.report.get("proof_of_cloud") is not None:
+        report["proof_of_cloud"] = poc_result.report["proof_of_cloud"]
+    if not poc_result.valid:
+        errors.extend(poc_result.errors)
+
     # Overall validity
     required_checks = [
-        checks.get("tls_cert_obtained"),
+        checks.get("tls_cert_fetched"),
         checks.get("cpu_quote_fetched"),
-        checks.get("cpu_attestation_valid"),
-        checks.get("tls_binding"),
-        checks.get("workload_verified", False),
+        checks.get("cpu_quote_verified"),
+        checks.get("tls_binding_verified"),
+        checks.get("workload_binding_verified", False),
+        checks.get("proof_of_cloud_verified", False),
     ]
     if gpu_present:
-        required_checks.append(checks.get("gpu_attestation_valid"))
-        required_checks.append(checks.get("gpu_binding"))
+        required_checks.append(checks.get("gpu_quote_verified"))
+        required_checks.append(checks.get("gpu_binding_verified"))
 
     valid = all(required_checks)
 
     return AttestationResult(
         valid=valid, attestation_type="SECRET-VM",
-        checks=checks, report=report, errors=errors,
+        checks=order_checks(checks), report=report, errors=errors,
     )
 
 

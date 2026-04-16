@@ -13,6 +13,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates two critical bindings:
   - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 fingerprint of the VM's TLS certificate, proving the quote was generated on the machine serving that certificate.
   - **GPU binding**: The second 32 bytes of `report_data` must match the GPU attestation nonce, proving the CPU and GPU attestations are linked.
+- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Included in the default `check_secret_vm` flow and exposed as a standalone `check_proof_of_cloud` / `checkProofOfCloud` function.
 - **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow (TLS binding, CPU attestation, GPU attestation, and workload verification). Three composable functions:
   - **`resolveAgent`** — Queries the on-chain registry contract for the agent's metadata (tokenURI -> services, supportedTrust).
   - **`verifyAgent`** — Takes agent metadata and runs full TEE verification against the agent's declared endpoints.
@@ -47,7 +48,7 @@ result = check_secret_vm("my-vm.example.com")
 
 print(result.valid)           # True if all checks pass
 print(result.attestation_type) # "SECRET-VM"
-print(result.checks)          # {"tls_cert_obtained": True, "cpu_attestation_valid": True, ...}
+print(result.checks)          # {"cpu_quote_fetched": True, "tls_cert_fetched": True, ...}
 print(result.report)          # {"tls_fingerprint": "...", "cpu": {...}, "cpu_type": "TDX", ...}
 print(result.errors)          # [] if no errors
 ```
@@ -61,7 +62,7 @@ const result = await checkSecretVm('my-vm.example.com');
 
 console.log(result.valid);           // true if all checks pass
 console.log(result.attestationType); // "SECRET-VM"
-console.log(result.checks);         // { tls_cert_obtained: true, cpu_attestation_valid: true, ... }
+console.log(result.checks);         // { cpu_quote_fetched: true, tls_cert_fetched: true, ... }
 console.log(result.report);         // { tls_fingerprint: "...", cpu: {...}, cpu_type: "TDX", ... }
 console.log(result.errors);         // [] if no errors
 ```
@@ -247,13 +248,16 @@ End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GP
 **Checks performed:**
 | Check | Description |
 |-------|-------------|
-| `tls_cert_obtained` | TLS certificate retrieved from the VM |
 | `cpu_quote_fetched` | CPU quote fetched from `/cpu` endpoint |
-| `cpu_attestation_valid` | CPU attestation signature chain verified |
-| `tls_binding` | report_data first half matches TLS cert fingerprint |
+| `tls_cert_fetched` | TLS certificate retrieved from the VM |
+| `cpu_quote_verified` | CPU attestation signature chain verified |
+| `tls_binding_verified` | report_data first half matches TLS cert fingerprint |
 | `gpu_quote_fetched` | GPU quote fetched from `/gpu` endpoint (false if no GPU) |
-| `gpu_attestation_valid` | GPU attestation verified via NVIDIA NRAS (only if GPU present) |
-| `gpu_binding` | report_data second half matches GPU nonce (only if GPU present) |
+| `gpu_quote_verified` | GPU attestation verified via NVIDIA NRAS (only if GPU present) |
+| `gpu_binding_verified` | report_data second half matches GPU nonce (only if GPU present) |
+| `workload_fetched` | `docker-compose` fetched from `/docker-compose` endpoint |
+| `workload_binding_verified` | Workload (docker-compose hash) matches the attested one |
+| `proof_of_cloud_verified` | SCRT Labs' quote-parse endpoint confirms the VM is a Secret VM |
 
 ---
 
@@ -287,6 +291,21 @@ Verifies an AMD SEV-SNP attestation report.
 - `product` — `"Genoa"`, `"Milan"`, or `"Turin"`. Auto-detected if omitted.
 
 **Report fields include:** `version`, `measurement`, `report_data`, `chip_id`, `vmpl`, `policy`, `debug_allowed`, `product`
+
+---
+
+#### `check_proof_of_cloud(quote)` / `checkProofOfCloud(quote)`
+
+Verifies a raw CPU quote against SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint. The service parses the quote, confirms it was produced by a Secret VM, and returns the VM's `origin` and `machine_id`.
+
+**Parameters:**
+- `quote` — Raw CPU quote text as served by the VM's `/cpu` endpoint.
+
+**Checks performed:** `proof_of_cloud_verified` (HTTP 200 and body contains `proof_of_cloud: true`).
+
+**Report fields:** `origin`, `proof_of_cloud`, `status` (`{attestation_type, result, exp_status}`), `machine_id`.
+
+Also runs automatically as part of `check_secret_vm` and is spliced into the CLI output for `--cpu`, `--tdx`, and `--sev` as the `proof_of_cloud_verified` check.
 
 ---
 
@@ -459,7 +478,9 @@ Options:
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin)
   --raw                Output raw JSON result
-  --verbose, -v        Print all attestation report fields
+  --verbose, -v        Print parsed CPU/GPU/proof-of-cloud quotes as JSON
+  --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
+                       cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
 ```
 
 ### Python CLI
@@ -479,6 +500,7 @@ The library contacts these services during verification:
 | Service | Used by | Purpose |
 |---------|---------|---------|
 | [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains) |
+| [SCRT Labs quote-parse](https://secretai.scrtlabs.com/api/quote-parse) | Secret VM, `--cpu`/`--tdx`/`--sev`, agent | Proof-of-cloud verdict (confirms quote originated on a Secret VM) |
 | [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate, AMD CA cert chain (ASK + ARK), CRL |
 | [NVIDIA NRAS](https://nras.attestation.nvidia.com) | GPU | GPU attestation verification |
 

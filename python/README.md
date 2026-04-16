@@ -9,6 +9,7 @@ Attestation verification SDK for confidential computing environments. Verifies I
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX or SEV-SNP quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image and verifies the exact compose file that was booted.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates TLS and GPU cryptographic bindings.
+- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Included in the default `check_secret_vm` flow and exposed as a standalone `check_proof_of_cloud` / `check_proof_of_cloud_async` function.
 - **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow. Three composable functions:
   - **`resolve_agent`** — Queries the on-chain registry contract for the agent's metadata.
   - **`verify_agent`** — Takes agent metadata and runs full TEE verification against the agent's declared endpoints.
@@ -33,7 +34,7 @@ result = check_secret_vm("my-vm.example.com")
 
 print(result.valid)           # True if all checks pass
 print(result.attestation_type) # "SECRET-VM"
-print(result.checks)          # {"tls_cert_obtained": True, "cpu_attestation_valid": True, ...}
+print(result.checks)          # {"cpu_quote_fetched": True, "tls_cert_fetched": True, ...}
 print(result.report)          # {"tls_fingerprint": "...", "cpu": {...}, "cpu_type": "TDX", ...}
 print(result.errors)          # [] if no errors
 ```
@@ -163,6 +164,12 @@ Verifies an AMD SEV-SNP attestation report.
 #### `check_nvidia_gpu_attestation(data)`
 
 Verifies NVIDIA GPU attestation via NRAS.
+
+#### `check_proof_of_cloud(quote)` / `check_proof_of_cloud_async(quote)`
+
+POSTs a raw CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint. Returns an `AttestationResult` with `attestation_type="PROOF-OF-CLOUD"` and a single check `proof_of_cloud_verified`. The report exposes `origin`, `proof_of_cloud`, `status`, and `machine_id`. Also runs automatically inside `check_secret_vm`.
+
+The Node CLI also splices this verdict into the output of `--cpu`, `--tdx`, and `--sev` as the `proof_of_cloud_verified` check row.
 
 #### `resolve_secretvm_version(data)`
 

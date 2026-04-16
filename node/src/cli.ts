@@ -6,6 +6,7 @@ import {
   checkTdxCpuAttestation,
   checkSevCpuAttestation,
   checkNvidiaGpuAttestation,
+  checkProofOfCloud,
   detectCpuQuoteType,
   resolveSecretVmVersion,
   resolveAmdSevVersion,
@@ -14,7 +15,25 @@ import {
 } from "./index.js";
 import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
 import { extractDockerCompose } from "./vm.js";
+import { orderChecks } from "./types.js";
 import type { AttestationResult } from "./types.js";
+
+async function mergeProofOfCloud(
+  result: AttestationResult,
+  quote: string,
+): Promise<AttestationResult> {
+  const poc = await checkProofOfCloud(quote);
+  result.checks.proof_of_cloud_verified = poc.valid;
+  result.checks = orderChecks(result.checks);
+  if (poc.report.proof_of_cloud !== undefined) {
+    result.report.proof_of_cloud = poc.report.proof_of_cloud;
+  }
+  if (!poc.valid) {
+    result.errors.push(...poc.errors);
+    result.valid = false;
+  }
+  return result;
+}
 
 const args = process.argv.slice(2);
 
@@ -36,11 +55,6 @@ const raw = getFlag("--raw");
 const verbose = getFlag("--verbose") || getFlag("-v");
 const product = getFlagValue("--product") ?? "";
 const vmUrl = getFlagValue("--vm");
-// `--secretvm` defaults to a terse output (verdict + errors only). Use
-// `--verbose` (or `-v`) to also show the per-check breakdown and report
-// fields. Other modes (--cpu, --tdx, --sev, --gpu, etc.) keep their
-// detailed default output.
-const isSecretvm = getFlag("--secretvm");
 // `--reload-amd-kds` bypasses the local AMD KDS cache and re-fetches
 // VCEK, AMD CA cert chain, and CRL from kdsintf.amd.com. No effect on TDX.
 const reloadAmdKds = getFlag("--reload-amd-kds");
@@ -150,23 +164,26 @@ if (getFlag("--secretvm")) {
     console.log(USAGE);
     process.exit(1);
   }
-  if (!raw) console.log(`Checking attestation for ${url} ...\n`);
+  if (!raw) console.log(`Verifying ${url}\n`);
   result = await checkSecretVm(url, product, reloadAmdKds);
 } else if (getFlag("--cpu")) {
   const quoteData = await getCpuQuote("--cpu");
   const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
   if (!raw) console.log(`Verifying CPU quote from ${source} ...\n`);
   result = await checkCpuAttestation(quoteData, product, reloadAmdKds);
+  result = await mergeProofOfCloud(result, quoteData);
 } else if (getFlag("--tdx")) {
   const quoteData = await getCpuQuote("--tdx");
   const source = vmUrl ? vmUrl : getFlagValue("--tdx") ?? getPositional();
   if (!raw) console.log(`Verifying TDX quote from ${source} ...\n`);
   result = await checkTdxCpuAttestation(quoteData);
+  result = await mergeProofOfCloud(result, quoteData);
 } else if (getFlag("--sev")) {
   const quoteData = await getCpuQuote("--sev");
   const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
   if (!raw) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
   result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
+  result = await mergeProofOfCloud(result, quoteData);
 } else if (getFlag("--gpu")) {
   const quoteData = await getGpuQuote("--gpu");
   const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
@@ -295,7 +312,7 @@ if (getFlag("--secretvm")) {
     console.log(USAGE);
     process.exit(1);
   }
-  if (!raw) console.log(`Checking attestation for ${url} ...\n`);
+  if (!raw) console.log(`Verifying ${url}\n`);
   result = await checkSecretVm(url, product, reloadAmdKds);
 }
 
@@ -305,31 +322,6 @@ if (raw) {
   process.exit(result.valid ? 0 : 1);
 }
 
-// Prominent top-level cryptographic attestation verdict.
-// Prefer the QVL `quote_verified` signal (direct CPU/TDX call), or its
-// propagated form `cpu_quote_verified` from a wrapper (checkSecretVm,
-// verifyAgent). Fall back to other CPU verdict signals so this line works
-// across all attestation types.
-function getAttestationVerdict(r: AttestationResult): boolean | null {
-  const c = r.checks;
-  if (c.quote_verified !== undefined) return !!c.quote_verified;
-  if (c.cpu_quote_verified !== undefined) return !!c.cpu_quote_verified;
-  if (c.report_signature_valid !== undefined) return !!c.report_signature_valid;
-  if (c.cpu_attestation_valid !== undefined) return !!c.cpu_attestation_valid;
-  return null;
-}
-const verdict = getAttestationVerdict(result);
-if (verdict !== null) {
-  const label = verdict ? "PASS" : "FAIL";
-  const icon = verdict ? "✅" : "🚫";
-  console.log(`${icon} Attestation verified: ${label}\n`);
-}
-
-// The per-check PASS/FAIL breakdown is always shown. The report-field
-// details (CPU/TLS/RTMR/TCB/GPU specifics) are hidden in `--secretvm` mode
-// without `--verbose`. Other modes (--cpu, --tdx, --sev, --gpu,
-// --check-agent, etc.) always show the report fields.
-const showReportFields = !isSecretvm || verbose;
 const report = result.report;
 
 console.log("Checks:");
@@ -342,54 +334,32 @@ for (const [name, passed] of Object.entries(result.checks)) {
   console.log(`  ${(name + ":").padEnd(35)} ${status}`);
 }
 
-if (showReportFields) {
-  // Secret VM specific fields
-  if (report.cpu_type) console.log(`\nCPU type: ${report.cpu_type}`);
-  if (report.tls_fingerprint) console.log(`TLS fingerprint: ${report.tls_fingerprint}`);
-
-  // CPU fields (direct or nested under cpu)
-  const cpu = report.cpu ?? report;
-  if (cpu.report_data) console.log(`Report data: ${cpu.report_data}`);
-  if (cpu.measurement) console.log(`Measurement: ${cpu.measurement}`);
-  if (cpu.mr_td) console.log(`MR TD:  ${cpu.mr_td}`);
-  if (cpu.rt_mr0) console.log(`RTMR0:  ${cpu.rt_mr0}`);
-  if (cpu.rt_mr1) console.log(`RTMR1:  ${cpu.rt_mr1}`);
-  if (cpu.rt_mr2) console.log(`RTMR2:  ${cpu.rt_mr2}`);
-  if (cpu.rt_mr3) console.log(`RTMR3:  ${cpu.rt_mr3}`);
-  if (cpu.tcb_status) console.log(`TCB status: ${cpu.tcb_status}`);
-  if (cpu.product) console.log(`AMD product: ${cpu.product}`);
-  if (cpu.chip_id) console.log(`Chip ID: ${cpu.chip_id}`);
-  if (cpu.fmspc) console.log(`FMSPC: ${cpu.fmspc}`);
-
-  // GPU fields (direct or nested under gpu)
-  const gpu = report.gpu ?? report;
-  if (gpu.overall_result !== undefined) console.log(`\nGPU overall result: ${gpu.overall_result}`);
-  if (gpu.gpus) {
-    for (const [gpuId, info] of Object.entries<any>(gpu.gpus)) {
-      console.log(`\n${gpuId}:`);
-      console.log(`  Model: ${info.model}`);
-      console.log(`  Driver: ${info.driver_version}`);
-      console.log(`  Secure boot: ${info.secure_boot}`);
-    }
-  }
-}
-
-// Verbose: print all report fields
 if (verbose) {
-  console.log("\nAll attestation report fields:");
-  for (const [key, value] of Object.entries(report)) {
-    if (typeof value === "object" && value !== null) {
-      console.log(`  ${key}:`);
-      for (const [subKey, subValue] of Object.entries(value)) {
-        if (typeof subValue === "object" && subValue !== null) {
-          console.log(`    ${subKey}: ${JSON.stringify(subValue)}`);
-        } else {
-          console.log(`    ${subKey}: ${subValue}`);
-        }
-      }
-    } else {
-      console.log(`  ${key}: ${value}`);
-    }
+  // For direct --tdx/--sev calls the CPU fields live at report top-level.
+  // After mergeProofOfCloud splices proof_of_cloud into report, we must
+  // exclude it from the CPU quote dump or it renders twice.
+  let cpuQuote: any = null;
+  if (report.cpu) {
+    cpuQuote = report.cpu;
+  } else if (["TDX", "SEV-SNP"].includes(result.attestationType)) {
+    const { proof_of_cloud: _poc, ...cpuFields } = report;
+    cpuQuote = cpuFields;
+  }
+  const gpuQuote =
+    report.gpu ??
+    (result.attestationType === "NVIDIA-GPU" ? report : null);
+  const poc = report.proof_of_cloud;
+  if (cpuQuote) {
+    console.log("\nCPU quote:");
+    console.log(JSON.stringify(cpuQuote, null, 2));
+  }
+  if (gpuQuote) {
+    console.log("\nGPU quote:");
+    console.log(JSON.stringify(gpuQuote, null, 2));
+  }
+  if (poc) {
+    console.log("\nProof of cloud:");
+    console.log(JSON.stringify(poc, null, 2));
   }
 }
 
@@ -398,7 +368,7 @@ if (result.errors.length > 0) {
   for (const err of result.errors) console.log(`  - ${err}`);
 }
 
-console.log(`\n${result.valid ? "PASSED" : "FAILED"}`);
+console.log(`\n${result.valid ? "✅ All Passed" : "🚫 Failed"}`);
 process.exit(result.valid ? 0 : 1);
 
 } catch (err: any) {
