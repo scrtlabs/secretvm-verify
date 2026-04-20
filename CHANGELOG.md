@@ -2,6 +2,12 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.6.1] — 2026-04-20
+
+### Added
+
+- **`--json` CLI flag** — emits a minimal JSON form of the result: `valid`, `attestationType` (`attestation_type` in Python), `checks`, `errors`. The verbose `report` field (parsed CPU/GPU/proof-of-cloud contents) is omitted. Use `--raw` if you need the full result with `report`. Works across every CLI verb (`--secretvm`, `--cpu`, `--tdx`, `--sev`, `--gpu`, `-rv`, `-vw`, `--check-agent`, `--agent`).
+
 ## [0.6.0] — 2026-04-16
 
 ### Breaking

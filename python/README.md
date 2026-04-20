@@ -244,7 +244,8 @@ Supported chains: ethereum, base, arbitrum, sepolia, polygon, bnb, gnosis, linea
 cd python
 pip install -e .
 python check_vm.py https://my-vm:29343
-python check_vm.py https://my-vm:29343 --raw     # JSON output
+python check_vm.py https://my-vm:29343 --json    # minimal JSON
+python check_vm.py https://my-vm:29343 --raw     # full JSON with parsed report
 python check_vm.py https://my-vm:29343 --product Genoa
 ```
 

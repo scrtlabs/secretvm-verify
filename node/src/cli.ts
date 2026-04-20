@@ -52,7 +52,14 @@ function getPositional(): string | undefined {
 }
 
 const raw = getFlag("--raw");
+const json = getFlag("--json");
+const jsonOut = raw || json;
 const verbose = getFlag("--verbose") || getFlag("-v");
+
+function minimalJson(result: AttestationResult): object {
+  const { report: _report, ...rest } = result;
+  return rest;
+}
 const product = getFlagValue("--product") ?? "";
 const vmUrl = getFlagValue("--vm");
 // `--reload-amd-kds` bypasses the local AMD KDS cache and re-fetches
@@ -98,7 +105,7 @@ async function getGpuQuote(flagName: string): Promise<string> {
   return readFileSync(file, "utf8");
 }
 
-const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--raw] [--verbose|-v]
+const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--json|--raw] [--verbose|-v]
 
 Commands:
   --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
@@ -118,8 +125,9 @@ Options:
   --vm <url>           Fetch quote from a VM instead of a file (works with --cpu, --tdx, --sev, --gpu, -rv, -vw)
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin)
-  --raw                Output raw JSON result
-  --verbose, -v        Print all attestation report fields
+  --json               Output minimal JSON (valid, checks, errors) — omits the report fields
+  --raw                Output full JSON result (includes the parsed report fields)
+  --verbose, -v        Print all attestation report fields (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
 
@@ -164,30 +172,30 @@ if (getFlag("--secretvm")) {
     console.log(USAGE);
     process.exit(1);
   }
-  if (!raw) console.log(`Verifying ${url}\n`);
+  if (!jsonOut) console.log(`Verifying ${url}\n`);
   result = await checkSecretVm(url, product, reloadAmdKds);
 } else if (getFlag("--cpu")) {
   const quoteData = await getCpuQuote("--cpu");
   const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
-  if (!raw) console.log(`Verifying CPU quote from ${source} ...\n`);
+  if (!jsonOut) console.log(`Verifying CPU quote from ${source} ...\n`);
   result = await checkCpuAttestation(quoteData, product, reloadAmdKds);
   result = await mergeProofOfCloud(result, quoteData);
 } else if (getFlag("--tdx")) {
   const quoteData = await getCpuQuote("--tdx");
   const source = vmUrl ? vmUrl : getFlagValue("--tdx") ?? getPositional();
-  if (!raw) console.log(`Verifying TDX quote from ${source} ...\n`);
+  if (!jsonOut) console.log(`Verifying TDX quote from ${source} ...\n`);
   result = await checkTdxCpuAttestation(quoteData);
   result = await mergeProofOfCloud(result, quoteData);
 } else if (getFlag("--sev")) {
   const quoteData = await getCpuQuote("--sev");
   const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
-  if (!raw) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
+  if (!jsonOut) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
   result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
   result = await mergeProofOfCloud(result, quoteData);
 } else if (getFlag("--gpu")) {
   const quoteData = await getGpuQuote("--gpu");
   const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
-  if (!raw) console.log(`Verifying NVIDIA GPU attestation from ${source} ...\n`);
+  if (!jsonOut) console.log(`Verifying NVIDIA GPU attestation from ${source} ...\n`);
   result = await checkNvidiaGpuAttestation(quoteData);
 } else if (getFlag("--resolve-version") || getFlag("-rv")) {
   const quoteData = await getCpuQuote("--resolve-version", "-rv");
@@ -199,6 +207,10 @@ if (getFlag("--secretvm")) {
     const version = await resolveAmdSevVersion(quoteData);
     if (raw) {
       console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+      process.exit(quoteResult.valid && !!version ? 0 : 1);
+    }
+    if (json) {
+      console.log(JSON.stringify({ quote: minimalJson(quoteResult), version }, null, 2));
       process.exit(quoteResult.valid && !!version ? 0 : 1);
     }
     if (!quoteResult.valid) {
@@ -219,6 +231,10 @@ if (getFlag("--secretvm")) {
     const version = await resolveSecretVmVersion(quoteData);
     if (raw) {
       console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+      process.exit(quoteResult.valid && !!version ? 0 : 1);
+    }
+    if (json) {
+      console.log(JSON.stringify({ quote: minimalJson(quoteResult), version }, null, 2));
       process.exit(quoteResult.valid && !!version ? 0 : 1);
     }
     if (!quoteResult.valid) {
@@ -252,6 +268,11 @@ if (getFlag("--secretvm")) {
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
+    if (json) {
+      const workloadResult = await verifyWorkload(quoteData, composeData);
+      console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
+      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+    }
     if (!quoteResult.valid) {
       console.log("🚫 Quote cryptographic verification failed");
       process.exit(1);
@@ -279,6 +300,11 @@ if (getFlag("--secretvm")) {
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
+    if (json) {
+      const workloadResult = await verifyWorkload(quoteData, composeData);
+      console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
+      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+    }
     if (!quoteResult.valid) {
       console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
       process.exit(1);
@@ -294,7 +320,7 @@ if (getFlag("--secretvm")) {
     console.log(USAGE);
     process.exit(1);
   }
-  if (!raw) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
+  if (!jsonOut) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
   result = await checkAgent(Number(id), chain, reloadAmdKds);
 } else if (getFlag("--agent")) {
   const file = getFlagValue("--agent") ?? getPositional();
@@ -303,7 +329,7 @@ if (getFlag("--secretvm")) {
     process.exit(1);
   }
   const metadata = JSON.parse(readFileSync(file, "utf8"));
-  if (!raw) console.log(`Verifying agent "${metadata.name}" ...\n`);
+  if (!jsonOut) console.log(`Verifying agent "${metadata.name}" ...\n`);
   result = await verifyAgent(metadata, reloadAmdKds);
 } else {
   // Legacy: bare URL defaults to --secretvm
@@ -312,13 +338,17 @@ if (getFlag("--secretvm")) {
     console.log(USAGE);
     process.exit(1);
   }
-  if (!raw) console.log(`Verifying ${url}\n`);
+  if (!jsonOut) console.log(`Verifying ${url}\n`);
   result = await checkSecretVm(url, product, reloadAmdKds);
 }
 
 // Output
 if (raw) {
   console.log(JSON.stringify(result, null, 2));
+  process.exit(result.valid ? 0 : 1);
+}
+if (json) {
+  console.log(JSON.stringify(minimalJson(result), null, 2));
   process.exit(result.valid ? 0 : 1);
 }
 

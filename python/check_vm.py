@@ -9,10 +9,11 @@ from secretvm.verify import check_secret_vm
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--raw] [--verbose|-v] [--reload-amd-kds]")
+        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
-        print(f"  Default output is the verdict only; use --verbose for the per-check")
-        print(f"  breakdown and report field details.")
+        print(f"  Default output is the per-check PASS/FAIL breakdown. Use --json for")
+        print(f"  minimal JSON (no report fields), --raw for full JSON, or --verbose for")
+        print(f"  the text breakdown with parsed CPU/GPU/proof-of-cloud quotes.")
         print(f"  --reload-amd-kds bypasses the local AMD KDS cache and re-fetches")
         print(f"  VCEK, CA cert chain, and CRL from kdsintf.amd.com (no effect on TDX).")
         sys.exit(1)
@@ -25,15 +26,21 @@ def main():
             product = sys.argv[idx + 1]
 
     raw = "--raw" in sys.argv
+    json_out = "--json" in sys.argv
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     reload_amd_kds = "--reload-amd-kds" in sys.argv
 
-    if not raw:
+    if not (raw or json_out):
         print(f"Verifying {url}\n")
     result = check_secret_vm(url, product=product, reload_amd_kds=reload_amd_kds)
 
     if raw:
         print(json.dumps(asdict(result), indent=2))
+        sys.exit(0 if result.valid else 1)
+    if json_out:
+        minimal = asdict(result)
+        minimal.pop("report", None)
+        print(json.dumps(minimal, indent=2))
         sys.exit(0 if result.valid else 1)
 
     # The per-check PASS/FAIL breakdown is always shown. The report-field

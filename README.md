@@ -447,8 +447,8 @@ secretvm-verify --check-agent 38114 --chain base -v
 secretvm-verify --agent metadata.json
 
 # JSON output (any command)
-secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw
-secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --raw
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --json   # minimal JSON
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw    # full JSON with parsed report
 
 # A bare URL defaults to --secretvm
 secretvm-verify yellow-krill.vm.scrtlabs.com
@@ -457,7 +457,7 @@ secretvm-verify yellow-krill.vm.scrtlabs.com
 Full usage:
 
 ```
-Usage: secretvm-verify <command> <value> [--product NAME] [--raw] [--verbose|-v]
+Usage: secretvm-verify <command> <value> [--product NAME] [--json|--raw] [--verbose|-v]
 
 Commands:
   --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
@@ -477,8 +477,9 @@ Options:
   --vm <url>           Fetch quote from a VM instead of a file
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin)
-  --raw                Output raw JSON result
-  --verbose, -v        Print parsed CPU/GPU/proof-of-cloud quotes as JSON
+  --json               Output minimal JSON (valid, checks, errors) — omits parsed report fields
+  --raw                Output full JSON result (includes the parsed report fields)
+  --verbose, -v        Print parsed CPU/GPU/proof-of-cloud quotes as JSON (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
 ```
@@ -489,7 +490,8 @@ Options:
 cd python
 pip install -e .
 python check_vm.py https://my-vm:29343
-python check_vm.py https://my-vm:29343 --raw     # JSON output
+python check_vm.py https://my-vm:29343 --json    # minimal JSON
+python check_vm.py https://my-vm:29343 --raw     # full JSON with parsed report
 python check_vm.py https://my-vm:29343 --product Genoa
 ```
 

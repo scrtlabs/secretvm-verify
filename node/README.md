@@ -286,7 +286,8 @@ secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
 secretvm-verify -vw cpu_quote.txt --compose docker-compose.yaml
 
 # JSON output (any command)
-secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --json   # minimal JSON
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw    # full JSON with parsed report
 
 # Verbose output (all attestation fields)
 secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com -v

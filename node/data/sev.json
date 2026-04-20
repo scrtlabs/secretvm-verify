@@ -190,8 +190,7 @@
                 "section_type": 16
             }
         ]
-    }
-,
+    },
         {
                 "vm_type": "prod",
                 "rootfs_hash": "f44141c9a0cbed19ddf30b16929de33633e5631cfd68731e9ff9e4321d5775fd",
