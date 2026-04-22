@@ -65,6 +65,12 @@ const vmUrl = getFlagValue("--vm");
 // `--reload-amd-kds` bypasses the local AMD KDS cache and re-fetches
 // VCEK, AMD CA cert chain, and CRL from kdsintf.amd.com. No effect on TDX.
 const reloadAmdKds = getFlag("--reload-amd-kds");
+// `--docker-files <path>` points at a tar archive of Dockerfiles baked into
+// the VM image; the SHA-256 digest is appended to the RTMR3 replay log for
+// TDX workload verification. `--docker-files-sha256 <hex>` supplies the
+// digest directly (skip reading the file). TDX-only.
+const dockerFilesPath = getFlagValue("--docker-files");
+const dockerFilesSha256 = getFlagValue("--docker-files-sha256");
 
 const SECRET_VM_PORT = 29343;
 
@@ -115,8 +121,11 @@ Commands:
   --gpu <file|--vm url>             Verify an NVIDIA GPU attestation
   --resolve-version, -rv <file|--vm url>
                                     Resolve SecretVM version from TDX or AMD SEV-SNP quote
-  --verify-workload, -vw <file|--vm url> [--compose <file>]
-                                    Verify workload against a docker-compose (fetched from VM if --vm)
+  --verify-workload, -vw <file|--vm url> [--compose <file>] [--docker-files <tar> | --docker-files-sha256 <hex>]
+                                    Verify workload against a docker-compose (fetched from VM if --vm).
+                                    --docker-files accepts a path to the Dockerfiles archive; its SHA-256 is
+                                    computed client-side and appended to the RTMR3 replay. --docker-files-sha256
+                                    supplies the digest directly (skips the file read). TDX-only.
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain
   --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
@@ -142,6 +151,8 @@ Examples:
   secretvm-verify -rv --vm blue-moose.vm.scrtlabs.com
   secretvm-verify -vw --vm blue-moose.vm.scrtlabs.com
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
+  secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files docker-files.tar
+  secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files-sha256 <hex>
   secretvm-verify --check-agent 38114 --chain base
   secretvm-verify --check-agent 38114 --chain base -v
   secretvm-verify --agent metadata.json`;
@@ -259,6 +270,14 @@ if (getFlag("--secretvm")) {
     if (!composeFile) { console.log(USAGE); process.exit(1); }
     composeData = readFileSync(composeFile, "utf8");
   }
+  // Optional docker-files input (TDX-only). Either read the archive and
+  // compute SHA-256, or accept a precomputed digest.
+  const dockerFilesInput: { dockerFiles?: Buffer; dockerFilesSha256?: string } = {};
+  if (dockerFilesSha256) {
+    dockerFilesInput.dockerFilesSha256 = dockerFilesSha256;
+  } else if (dockerFilesPath) {
+    dockerFilesInput.dockerFiles = readFileSync(dockerFilesPath);
+  }
   const quoteType = detectCpuQuoteType(quoteData);
   if (quoteType === "SEV-SNP") {
     // Step 1: cryptographic quote verification
@@ -296,12 +315,12 @@ if (getFlag("--secretvm")) {
   } else {
     const quoteResult = await checkTdxCpuAttestation(quoteData);
     if (raw) {
-      const workloadResult = await verifyWorkload(quoteData, composeData);
+      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
     if (json) {
-      const workloadResult = await verifyWorkload(quoteData, composeData);
+      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
       console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
@@ -309,7 +328,7 @@ if (getFlag("--secretvm")) {
       console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
       process.exit(1);
     }
-    const workloadResult = await verifyWorkload(quoteData, composeData);
+    const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
     console.log(formatWorkloadResult(workloadResult, vmUrl));
     process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
   }

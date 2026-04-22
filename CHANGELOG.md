@@ -2,6 +2,16 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.7.0] — 2026-04-22
+
+### Added
+
+- **Docker-files verification** for TDX workloads. A SecretVM booted with a Dockerfiles archive baked into its image extends RTMR3 with a third entry — the SHA-256 of that archive — on top of the usual `[SHA256(compose), rootfs_data]` replay. This release adds offline support for that third entry.
+  - SDK: `verifyTdxWorkload` / `verify_tdx_workload` and the auto-detect `verifyWorkload` / `verify_workload` now accept an optional docker-files input — either raw bytes (hashed client-side) or a precomputed SHA-256 hex digest.
+  - CLI: `--verify-workload` gains `--docker-files <tar>` and `--docker-files-sha256 <hex>`. Only one is needed; the former reads the archive and computes the digest locally, the latter skips the read.
+  - Mirrors the TDX initramfs behaviour in `scrtlabs/secret-vm-build` (`init-tdx` appends `SHA256(/mnt/docker-files.tar)` to RTMR3 when the archive is present). Fully offline — no network calls.
+  - SEV-SNP is unchanged: docker-files measurement on SEV flows through kernel cmdline, not RTMR, and is already covered by the existing SEV path.
+
 ## [0.6.1] — 2026-04-20
 
 ### Added

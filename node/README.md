@@ -177,13 +177,13 @@ POSTs a raw CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtla
 
 Looks up a quote in the SecretVM artifact registry. Returns the matching template name and version, or `null` if not found.
 
-#### `verifyWorkload(data, dockerComposeYaml)`
+#### `verifyWorkload(data, dockerComposeYaml, dockerFilesInput?)`
 
-Auto-detects quote type and verifies that it was produced by a known SecretVM running the given docker-compose.
+Auto-detects quote type and verifies that it was produced by a known SecretVM running the given docker-compose. The optional third argument `{ dockerFiles?, dockerFilesSha256? }` supports TDX VMs that bake a Dockerfiles archive into the image — pass the raw tar bytes (they get SHA-256'd client-side) or a precomputed hex digest. SEV-SNP ignores it.
 
-#### `verifyTdxWorkload(data, dockerComposeYaml)`
+#### `verifyTdxWorkload(data, dockerComposeYaml, dockerFilesInput?)`
 
-TDX-specific workload verification.
+TDX-specific workload verification. Same optional `{ dockerFiles?, dockerFilesSha256? }` argument as `verifyWorkload`; when provided, the SHA-256 of the archive is appended to the RTMR3 replay as `log[2]`.
 
 #### `verifySevWorkload(data, dockerComposeYaml)`
 

@@ -105,9 +105,17 @@ export async function resolveAmdSevVersion(
  *  5. If any row matches → authentic_match.
  *  6. Otherwise → authentic_mismatch.
  */
+export interface DockerFilesInput {
+    /** Raw bytes of the docker-files tar archive. SHA-256 is computed client-side. */
+    dockerFiles?: Uint8Array | Buffer;
+    /** Precomputed SHA-256 hex digest of the docker-files archive. Takes precedence over dockerFiles. */
+    dockerFilesSha256?: string;
+}
+
 export async function verifyTdxWorkload(
     quoteHexOrUrl: string,
     dockerComposeYaml?: string,
+    dockerFilesInput?: DockerFilesInput,
 ): Promise<WorkloadResult> {
     let quoteHex: string;
     let compose: string;
@@ -118,6 +126,14 @@ export async function verifyTdxWorkload(
         quoteHex = quoteHexOrUrl;
         if (!dockerComposeYaml) return { status: "not_authentic" };
         compose = dockerComposeYaml;
+    }
+
+    let dockerFilesSha256: string | undefined;
+    if (dockerFilesInput?.dockerFilesSha256) {
+        dockerFilesSha256 = dockerFilesInput.dockerFilesSha256;
+    } else if (dockerFilesInput?.dockerFiles) {
+        const bytes = Buffer.from(dockerFilesInput.dockerFiles);
+        dockerFilesSha256 = createHash("sha256").update(bytes).digest("hex");
     }
     let mrtd: string, rtmr0: string, rtmr1: string, rtmr2: string, quoteRtmr3: string;
     try {
@@ -146,7 +162,7 @@ export async function verifyTdxWorkload(
 
     // Check compose against every candidate entry (different rootfs_data or envs)
     for (const entry of candidates) {
-        const expected = calculateRtmr3(compose, entry.rootfs_data);
+        const expected = calculateRtmr3(compose, entry.rootfs_data, dockerFilesSha256);
         if (expected === quoteRtmr3) {
             return {
                 status: "authentic_match",
@@ -318,18 +334,19 @@ export async function verifySevWorkload(
 export async function verifyWorkload(
     quoteDataOrUrl: string,
     dockerComposeYaml?: string,
+    dockerFilesInput?: DockerFilesInput,
 ): Promise<WorkloadResult> {
     if (isVmUrl(quoteDataOrUrl)) {
         const quoteData = await fetchCpuQuote(quoteDataOrUrl);
         const compose = dockerComposeYaml ?? await fetchDockerCompose(quoteDataOrUrl);
         const type = detectCpuQuoteType(quoteData);
-        if (type === "TDX") return verifyTdxWorkload(quoteData, compose);
+        if (type === "TDX") return verifyTdxWorkload(quoteData, compose, dockerFilesInput);
         if (type === "SEV-SNP") return verifySevWorkload(quoteData, compose);
         return { status: "not_authentic" };
     }
     if (!dockerComposeYaml) return { status: "not_authentic" };
     const type = detectCpuQuoteType(quoteDataOrUrl);
-    if (type === "TDX") return verifyTdxWorkload(quoteDataOrUrl, dockerComposeYaml);
+    if (type === "TDX") return verifyTdxWorkload(quoteDataOrUrl, dockerComposeYaml, dockerFilesInput);
     if (type === "SEV-SNP") return verifySevWorkload(quoteDataOrUrl, dockerComposeYaml);
     return { status: "not_authentic" };
 }

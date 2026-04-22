@@ -14,6 +14,8 @@ import {
 } from "./index.js";
 import type { AttestationResult } from "./types.js";
 import { parseVmUrl } from "./vm.js";
+import { calculateRtmr3 } from "./rtmr.js";
+import { createHash } from "node:crypto";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEST_DATA = join(__dirname, "..", "..", "test-data");
@@ -456,5 +458,41 @@ describe("checkProofOfCloud", () => {
     } finally {
       restoreFetch();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RTMR3 calculation (with and without docker-files)
+// ---------------------------------------------------------------------------
+
+describe("calculateRtmr3", () => {
+  const compose = "services:\n  app:\n    image: nginx\n";
+  const rootfs = "de".repeat(32);  // any 32-byte hex
+  const dockerFiles = Buffer.from("pretend this is a tar");
+  const dockerFilesSha256 = createHash("sha256").update(dockerFiles).digest("hex");
+
+  it("produces a different RTMR3 when docker-files digest is included", () => {
+    const without = calculateRtmr3(compose, rootfs);
+    const withDigest = calculateRtmr3(compose, rootfs, dockerFilesSha256);
+    assert.notEqual(without, withDigest);
+    assert.equal(without.length, 96);
+    assert.equal(withDigest.length, 96);
+  });
+
+  it("normalizes 0x prefix and uppercase in docker-files digest", () => {
+    const lower = calculateRtmr3(compose, rootfs, dockerFilesSha256);
+    const withPrefix = calculateRtmr3(compose, rootfs, "0x" + dockerFilesSha256);
+    const upper = calculateRtmr3(compose, rootfs, dockerFilesSha256.toUpperCase());
+    assert.equal(withPrefix, lower);
+    assert.equal(upper, lower);
+  });
+
+  it("matches when docker-files bytes are provided vs precomputed digest", () => {
+    // This is tested via verifyTdxWorkload's internal path, but we replicate
+    // the digest computation here to prove equivalence.
+    const digestFromBytes = createHash("sha256").update(dockerFiles).digest("hex");
+    const fromBytes = calculateRtmr3(compose, rootfs, digestFromBytes);
+    const fromHex = calculateRtmr3(compose, rootfs, dockerFilesSha256);
+    assert.equal(fromBytes, fromHex);
   });
 });

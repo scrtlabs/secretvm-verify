@@ -9,7 +9,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 - **Intel TDX** — Performs full Intel DCAP quote verification, delegating the cryptographic checks to the upstream [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) (Python) / [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (Node) library. Verifies the PCK certificate chain against a pinned Intel SGX Root CA, the QE Identity, PCK CRL and Root CA CRL revocation, the TCB Info signature, the TCB status, the quote signature, and the QE report binding. Collateral (TCB Info, QE Identity, CRLs, issuer chains) is fetched from a Provisioning Certificate Caching Service (PCCS) — defaults to SCRT Labs' deployment.
 - **AMD SEV-SNP** — Parses a SEV-SNP attestation report, fetches the VCEK certificate from AMD's Key Distribution Service, verifies the ECDSA-P384 report signature, and validates the certificate chain (VCEK → ASK → ARK).
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
-- **SecretVM workload** — Given a TDX quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image (`resolveSecretVmVersion` / `verifyTdxWorkload`). Looks up the quote's MRTD and RTMR0–2 in a signed registry of official SecretVM builds, then replays the RTMR3 measurement to verify the exact compose file that was booted.
+- **SecretVM workload** — Given a TDX quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image (`resolveSecretVmVersion` / `verifyTdxWorkload`). Looks up the quote's MRTD and RTMR0–2 in a signed registry of official SecretVM builds, then replays the RTMR3 measurement to verify the exact compose file that was booted. For VMs that also bake a Dockerfiles archive into the image, the RTMR3 replay accepts an optional docker-files digest (via `--docker-files` / `--docker-files-sha256`) and appends it as the third entry.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates two critical bindings:
   - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 fingerprint of the VM's TLS certificate, proving the quote was generated on the machine serving that certificate.
   - **GPU binding**: The second 32 bytes of `report_data` must match the GPU attestation nonce, proving the CPU and GPU attestations are linked.
@@ -436,6 +436,12 @@ secretvm-verify --resolve-version cpu_quote.txt
 
 # Verify a TDX quote + docker-compose match
 secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
+
+# Same, plus a Dockerfiles archive digest (TDX VMs that bake docker-files into the image).
+# Pass --docker-files <path> to let the CLI hash the archive, or --docker-files-sha256 <hex>
+# if you already have the digest.
+secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files docker-files.tar
+secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files-sha256 <hex>
 # → ✅ Confirmed an authentic SecretVM (TDX), vm_type small, artifacts v0.0.25, environment prod
 # → ✅ Confirmed that the VM is running the specified docker-compose.yaml
 
@@ -467,7 +473,7 @@ Commands:
   --gpu <file|--vm url>             Verify an NVIDIA GPU attestation
   --resolve-version, -rv <file|--vm url>
                                     Resolve SecretVM version from TDX or AMD SEV-SNP quote
-  --verify-workload, -vw <file|--vm url> [--compose <file>]
+  --verify-workload, -vw <file|--vm url> [--compose <file>] [--docker-files <tar> | --docker-files-sha256 <hex>]
                                     Verify workload against a docker-compose (fetched from VM if --vm)
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain

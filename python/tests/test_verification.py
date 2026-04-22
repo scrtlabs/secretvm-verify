@@ -501,6 +501,33 @@ class TestSecretVm:
 
 
 # ---------------------------------------------------------------------------
+# RTMR3 calculation (with and without docker-files)
+# ---------------------------------------------------------------------------
+
+class TestCalculateRtmr3:
+    COMPOSE = "services:\n  app:\n    image: nginx\n"
+    ROOTFS = "de" * 32
+    DOCKER_FILES = b"pretend this is a tar"
+    import hashlib as _h
+    DOCKER_FILES_SHA = _h.sha256(DOCKER_FILES).hexdigest()
+
+    def test_different_without_and_with_digest(self):
+        from secretvm.verify.workload import _calculate_rtmr3
+        without = _calculate_rtmr3(self.COMPOSE, self.ROOTFS)
+        with_digest = _calculate_rtmr3(self.COMPOSE, self.ROOTFS, self.DOCKER_FILES_SHA)
+        assert without != with_digest
+        assert len(without) == 96 and len(with_digest) == 96
+
+    def test_normalizes_0x_and_uppercase(self):
+        from secretvm.verify.workload import _calculate_rtmr3
+        lower = _calculate_rtmr3(self.COMPOSE, self.ROOTFS, self.DOCKER_FILES_SHA)
+        with_prefix = _calculate_rtmr3(self.COMPOSE, self.ROOTFS, "0x" + self.DOCKER_FILES_SHA)
+        upper = _calculate_rtmr3(self.COMPOSE, self.ROOTFS, self.DOCKER_FILES_SHA.upper())
+        assert with_prefix == lower
+        assert upper == lower
+
+
+# ---------------------------------------------------------------------------
 # Workload verification (resolve_secretvm_version + verify_tdx_workload)
 # ---------------------------------------------------------------------------
 

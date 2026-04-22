@@ -29,17 +29,18 @@ function replayRtmr(history: string[]): string {
 }
 
 /**
- * Calculate RTMR3 from a docker-compose file content and rootfs_data.
+ * Calculate RTMR3 from a docker-compose file and (optionally) a docker-files
+ * archive digest.
  *
- * Mirrors portal logic exactly:
- *   1. Parse docker-compose YAML and re-stringify (normalise)
- *   2. SHA-256 of normalised YAML bytes  → log[0]
- *   3. rootfs_data (hex)                 → log[1]
- *   4. replayRtmr(log)
+ * Replay log order (matches the TDX initramfs in secret-vm-build's init-tdx):
+ *   1. SHA-256 of docker-compose bytes    → log[0]
+ *   2. rootfs_data (hex)                  → log[1]
+ *   3. SHA-256 of docker-files archive    → log[2]  (only when provided)
  */
 export function calculateRtmr3(
     dockerCompose: Buffer | string,
     rootfsData: string,
+    dockerFilesSha256?: string,
 ): string {
     const log: string[] = [];
 
@@ -51,6 +52,10 @@ export function calculateRtmr3(
 
     log.push(measureSha256(composeBuffer).toString("hex"));
     log.push(rootfsData.toLowerCase().replace(/^0x/, ""));
+
+    if (dockerFilesSha256) {
+        log.push(dockerFilesSha256.toLowerCase().replace(/^0x/, ""));
+    }
 
     return replayRtmr(log);
 }

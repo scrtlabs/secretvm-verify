@@ -175,13 +175,13 @@ The Node CLI also splices this verdict into the output of `--cpu`, `--tdx`, and 
 
 Looks up a quote in the SecretVM artifact registry. Returns the matching template name and version, or `None` if not found.
 
-#### `verify_workload(data, docker_compose_yaml)`
+#### `verify_workload(data, docker_compose_yaml, docker_files=None, docker_files_sha256=None)`
 
-Auto-detects quote type and verifies that it was produced by a known SecretVM running the given docker-compose.
+Auto-detects quote type and verifies that it was produced by a known SecretVM running the given docker-compose. The optional `docker_files` (raw bytes of the archive) or `docker_files_sha256` (hex digest) supports TDX VMs that bake a Dockerfiles archive into the image. SEV-SNP ignores these.
 
-#### `verify_tdx_workload(data, docker_compose_yaml)`
+#### `verify_tdx_workload(data, docker_compose_yaml, docker_files=None, docker_files_sha256=None)`
 
-TDX-specific workload verification.
+TDX-specific workload verification. When `docker_files` or `docker_files_sha256` is provided, the SHA-256 of the archive is appended to the RTMR3 replay as `log[2]`.
 
 #### `verify_sev_workload(data, docker_compose_yaml)`
 

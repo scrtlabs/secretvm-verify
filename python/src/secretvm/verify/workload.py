@@ -37,16 +37,26 @@ def _replay_rtmr(history: list) -> str:
     return bytes(mr).hex()
 
 
-def _calculate_rtmr3(docker_compose: str | bytes, rootfs_data: str) -> str:
-    """Calculate expected RTMR3 from docker-compose content and rootfs_data.
+def _calculate_rtmr3(
+    docker_compose: str | bytes,
+    rootfs_data: str,
+    docker_files_sha256: Optional[str] = None,
+) -> str:
+    """Calculate expected RTMR3 from docker-compose, rootfs_data, and
+    (optionally) a docker-files archive digest.
 
-    Hashes the raw file bytes directly (no YAML normalization), matching
-    the portal's Buffer path in calculateRTMR3.
+    Replay log order (matches the TDX initramfs in secret-vm-build):
+      1. SHA-256 of docker-compose bytes
+      2. rootfs_data (hex)
+      3. SHA-256 of docker-files archive  (only when provided)
     """
     compose_bytes = docker_compose if isinstance(docker_compose, bytes) else docker_compose.encode("utf-8")
     sha256_hex = hashlib.sha256(compose_bytes).hexdigest()
     rootfs_hex = rootfs_data.lower().removeprefix("0x")
-    return _replay_rtmr([sha256_hex, rootfs_hex])
+    log = [sha256_hex, rootfs_hex]
+    if docker_files_sha256:
+        log.append(docker_files_sha256.lower().removeprefix("0x"))
+    return _replay_rtmr(log)
 
 
 # ---------------------------------------------------------------------------
@@ -143,13 +153,23 @@ def resolve_secretvm_version(data_or_url: str) -> Optional[dict]:
     }
 
 
-def verify_tdx_workload(data_or_url: str, docker_compose_yaml: str = "") -> WorkloadResult:
+def verify_tdx_workload(
+    data_or_url: str,
+    docker_compose_yaml: str = "",
+    docker_files: Optional[bytes] = None,
+    docker_files_sha256: Optional[str] = None,
+) -> WorkloadResult:
     """Verify that a TDX quote was produced by a known SecretVM running the
     given docker-compose YAML.
 
     Args:
         data_or_url: Hex-encoded TDX quote, or a VM URL to fetch quote and compose from.
         docker_compose_yaml: Contents of the docker-compose.yaml file. Auto-fetched if URL.
+        docker_files: Optional raw bytes of the docker-files tar archive. SHA-256 is
+            computed client-side and appended to the RTMR3 replay. Ignored if
+            docker_files_sha256 is also provided.
+        docker_files_sha256: Optional hex SHA-256 digest of the docker-files archive.
+            Takes precedence over docker_files.
 
     Returns:
         WorkloadResult with status "authentic_match", "authentic_mismatch", or
@@ -163,6 +183,15 @@ def verify_tdx_workload(data_or_url: str, docker_compose_yaml: str = "") -> Work
         data = data_or_url
         if not docker_compose_yaml:
             return WorkloadResult(status="not_authentic")
+
+    # Resolve the docker-files digest: prefer explicit hex, fall back to
+    # hashing the provided archive bytes.
+    if docker_files_sha256:
+        df_sha = docker_files_sha256
+    elif docker_files is not None:
+        df_sha = hashlib.sha256(docker_files).hexdigest()
+    else:
+        df_sha = None
     try:
         raw = bytes.fromhex(data.strip())
         q = _tdx_parse_quote(raw)
@@ -187,7 +216,7 @@ def verify_tdx_workload(data_or_url: str, docker_compose_yaml: str = "") -> Work
     env = vm_type
 
     for entry in candidates:
-        expected = _calculate_rtmr3(docker_compose_yaml, entry["rootfs_data"])
+        expected = _calculate_rtmr3(docker_compose_yaml, entry["rootfs_data"], df_sha)
         if expected == quote_rtmr3:
             return WorkloadResult(
                 status="authentic_match",
@@ -533,7 +562,12 @@ def verify_sev_workload(data_or_url: str, docker_compose_yaml: str = "") -> Work
 # ---------------------------------------------------------------------------
 
 
-def verify_workload(data_or_url: str, docker_compose_yaml: str = "") -> WorkloadResult:
+def verify_workload(
+    data_or_url: str,
+    docker_compose_yaml: str = "",
+    docker_files: Optional[bytes] = None,
+    docker_files_sha256: Optional[str] = None,
+) -> WorkloadResult:
     """Verify that a CPU quote was produced by a known SecretVM running the
     given docker-compose YAML.
 
@@ -559,7 +593,7 @@ def verify_workload(data_or_url: str, docker_compose_yaml: str = "") -> Workload
             return WorkloadResult(status="not_authentic")
     quote_type = _detect_cpu_quote_type(data)
     if quote_type == "TDX":
-        return verify_tdx_workload(data, docker_compose_yaml)
+        return verify_tdx_workload(data, docker_compose_yaml, docker_files, docker_files_sha256)
     if quote_type == "SEV-SNP":
         return verify_sev_workload(data, docker_compose_yaml)
     return WorkloadResult(status="not_authentic")
