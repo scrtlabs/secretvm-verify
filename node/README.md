@@ -185,9 +185,9 @@ Auto-detects quote type and verifies that it was produced by a known SecretVM ru
 
 TDX-specific workload verification. Same optional `{ dockerFiles?, dockerFilesSha256? }` argument as `verifyWorkload`; when provided, the SHA-256 of the archive is appended to the RTMR3 replay as `log[2]`.
 
-#### `verifySevWorkload(data, dockerComposeYaml)`
+#### `verifySevWorkload(data, dockerComposeYaml, dockerFilesInput?)`
 
-SEV-SNP-specific workload verification.
+SEV-SNP-specific workload verification. When `dockerFiles` bytes or `dockerFilesSha256` hex is supplied, the digest is appended to the kernel cmdline as `docker_additional_files_hash=<hex>` before the SEV-SNP GCTX launch measurement is recomputed.
 
 #### `formatWorkloadResult(result)`
 

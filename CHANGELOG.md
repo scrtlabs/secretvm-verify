@@ -2,6 +2,19 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.8.0] — 2026-04-22
+
+### Added
+
+- **Docker-files verification for AMD SEV-SNP** workloads (TDX already shipped in v0.7.0). A SecretVM booted with a Dockerfiles archive baked into its image appends `docker_additional_files_hash=<sha>` to the kernel cmdline; the cmdline is hashed into the SEV-SNP GCTX launch measurement via the hash page. The verifier now reconstructs that cmdline when the digest is provided.
+  - SDK: `verifySevWorkload` / `verify_sev_workload` and the auto-detect `verifyWorkload` / `verify_workload` accept the same `{ dockerFiles?, dockerFilesSha256? }` / `docker_files=` / `docker_files_sha256=` inputs as the TDX variants.
+  - CLI: `--docker-files` / `--docker-files-sha256` now work for both TDX and SEV-SNP quotes. Help text and README updated accordingly.
+  - Source: the guest-side `init-sev` in `scrtlabs/secret-vm-build` reads `docker_additional_files_hash` from `/proc/cmdline` at boot; see `meta-secret-vm/recipes-core/images/secret-vm-initramfs-files/init-sev:47`.
+
+### Caveat
+
+- The exact position of `docker_additional_files_hash` in the kernel cmdline matters byte-for-byte (SEV-SNP measures the cmdline bytes). We append it after `rootfs_hash`, matching the read order in `init-sev`. If the launcher emits the hashes in a different position, SEV-with-docker-files quotes will produce `authentic_mismatch`. Please file an issue with a sample quote if you hit this.
+
 ## [0.7.0] — 2026-04-22
 
 ### Added

@@ -221,6 +221,7 @@ export function formatWorkloadResult(r: WorkloadResult, vmUrl?: string): string 
 export async function verifySevWorkload(
     quoteBase64OrUrl: string,
     dockerComposeYaml?: string,
+    dockerFilesInput?: DockerFilesInput,
 ): Promise<WorkloadResult> {
     let quoteBase64: string;
     let compose: string;
@@ -231,6 +232,18 @@ export async function verifySevWorkload(
         quoteBase64 = quoteBase64OrUrl;
         if (!dockerComposeYaml) return { status: "not_authentic" };
         compose = dockerComposeYaml;
+    }
+
+    // Resolve docker-files digest (see init-sev: appended to kernel cmdline as
+    // `docker_additional_files_hash=<hex>`, which is hashed into the SEV-SNP
+    // launch measurement via the GCTX hash page).
+    let dockerFilesSha256: string | undefined;
+    if (dockerFilesInput?.dockerFilesSha256) {
+        dockerFilesSha256 = dockerFilesInput.dockerFilesSha256
+            .toLowerCase().replace(/^0x/, "");
+    } else if (dockerFilesInput?.dockerFiles) {
+        const bytes = Buffer.from(dockerFilesInput.dockerFiles);
+        dockerFilesSha256 = createHash("sha256").update(bytes).digest("hex");
     }
     let raw: Buffer;
     try {
@@ -269,7 +282,10 @@ export async function verifySevWorkload(
     const versionEntries = imageId ? candidates.filter((e) => e.artifacts_ver === imageId) : [];
 
     function tryEntry(entry: SevArtifactEntry): boolean {
-        const cmdline = `console=ttyS0 loglevel=7 docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+        let cmdline = `console=ttyS0 loglevel=7 docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+        if (dockerFilesSha256) {
+            cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+        }
         try {
             return calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement;
         } catch {
@@ -341,12 +357,12 @@ export async function verifyWorkload(
         const compose = dockerComposeYaml ?? await fetchDockerCompose(quoteDataOrUrl);
         const type = detectCpuQuoteType(quoteData);
         if (type === "TDX") return verifyTdxWorkload(quoteData, compose, dockerFilesInput);
-        if (type === "SEV-SNP") return verifySevWorkload(quoteData, compose);
+        if (type === "SEV-SNP") return verifySevWorkload(quoteData, compose, dockerFilesInput);
         return { status: "not_authentic" };
     }
     if (!dockerComposeYaml) return { status: "not_authentic" };
     const type = detectCpuQuoteType(quoteDataOrUrl);
     if (type === "TDX") return verifyTdxWorkload(quoteDataOrUrl, dockerComposeYaml, dockerFilesInput);
-    if (type === "SEV-SNP") return verifySevWorkload(quoteDataOrUrl, dockerComposeYaml);
+    if (type === "SEV-SNP") return verifySevWorkload(quoteDataOrUrl, dockerComposeYaml, dockerFilesInput);
     return { status: "not_authentic" };
 }

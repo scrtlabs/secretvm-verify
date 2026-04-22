@@ -458,13 +458,24 @@ def _parse_sev_family_id(family_id_bytes: bytes) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 
 
-def verify_sev_workload(data_or_url: str, docker_compose_yaml: str = "") -> WorkloadResult:
+def verify_sev_workload(
+    data_or_url: str,
+    docker_compose_yaml: str = "",
+    docker_files: Optional[bytes] = None,
+    docker_files_sha256: Optional[str] = None,
+) -> WorkloadResult:
     """Verify that an AMD SEV-SNP quote was produced by a known SecretVM running
     the given docker-compose YAML.
 
     Args:
         data_or_url: Base64-encoded SEV-SNP report, or a VM URL to fetch quote and compose from.
         docker_compose_yaml: Contents of the docker-compose.yaml file. Auto-fetched if URL.
+        docker_files: Optional raw bytes of the docker-files tar archive. SHA-256 is
+            computed client-side and appended to the kernel cmdline as
+            ``docker_additional_files_hash=<hex>``; the cmdline is hashed into the
+            SEV-SNP launch measurement. Ignored if docker_files_sha256 is provided.
+        docker_files_sha256: Optional hex SHA-256 digest of the docker-files archive.
+            Takes precedence over docker_files.
 
     Returns:
         :class:`WorkloadResult` with status ``"authentic_match"``,
@@ -478,6 +489,16 @@ def verify_sev_workload(data_or_url: str, docker_compose_yaml: str = "") -> Work
         data = data_or_url
         if not docker_compose_yaml:
             return WorkloadResult(status="not_authentic")
+
+    # Resolve docker-files digest (see init-sev: appended to kernel cmdline
+    # as `docker_additional_files_hash=<hex>`, which is hashed into the
+    # SEV-SNP launch measurement via the GCTX hash page).
+    if docker_files_sha256:
+        df_sha = docker_files_sha256.lower().removeprefix("0x")
+    elif docker_files is not None:
+        df_sha = hashlib.sha256(docker_files).hexdigest()
+    else:
+        df_sha = None
     try:
         raw = base64.b64decode(data.strip())
     except Exception:
@@ -512,6 +533,8 @@ def verify_sev_workload(data_or_url: str, docker_compose_yaml: str = "") -> Work
     def try_entry(entry: dict) -> bool:
         rh = entry.get("rootfs_hash", "")
         cmdline = f"console=ttyS0 loglevel=7 docker_compose_hash={compose_hash} rootfs_hash={rh}"
+        if df_sha:
+            cmdline += f" docker_additional_files_hash={df_sha}"
         try:
             return _sev_calc_measurement(entry, vcpus, cmdline) == quote_measurement
         except Exception:
@@ -595,5 +618,5 @@ def verify_workload(
     if quote_type == "TDX":
         return verify_tdx_workload(data, docker_compose_yaml, docker_files, docker_files_sha256)
     if quote_type == "SEV-SNP":
-        return verify_sev_workload(data, docker_compose_yaml)
+        return verify_sev_workload(data, docker_compose_yaml, docker_files, docker_files_sha256)
     return WorkloadResult(status="not_authentic")

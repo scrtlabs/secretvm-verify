@@ -66,9 +66,9 @@ const vmUrl = getFlagValue("--vm");
 // VCEK, AMD CA cert chain, and CRL from kdsintf.amd.com. No effect on TDX.
 const reloadAmdKds = getFlag("--reload-amd-kds");
 // `--docker-files <path>` points at a tar archive of Dockerfiles baked into
-// the VM image; the SHA-256 digest is appended to the RTMR3 replay log for
-// TDX workload verification. `--docker-files-sha256 <hex>` supplies the
-// digest directly (skip reading the file). TDX-only.
+// the VM image. On TDX the SHA-256 digest becomes RTMR3 log[2]; on SEV-SNP
+// it is appended to the kernel cmdline as `docker_additional_files_hash=...`.
+// `--docker-files-sha256 <hex>` supplies the digest directly (skip the read).
 const dockerFilesPath = getFlagValue("--docker-files");
 const dockerFilesSha256 = getFlagValue("--docker-files-sha256");
 
@@ -124,8 +124,9 @@ Commands:
   --verify-workload, -vw <file|--vm url> [--compose <file>] [--docker-files <tar> | --docker-files-sha256 <hex>]
                                     Verify workload against a docker-compose (fetched from VM if --vm).
                                     --docker-files accepts a path to the Dockerfiles archive; its SHA-256 is
-                                    computed client-side and appended to the RTMR3 replay. --docker-files-sha256
-                                    supplies the digest directly (skips the file read). TDX-only.
+                                    computed client-side. --docker-files-sha256 supplies the digest directly
+                                    (skips the file read). On TDX the digest extends RTMR3; on SEV-SNP it is
+                                    appended to the kernel cmdline that feeds the launch measurement.
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain
   --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
@@ -270,8 +271,10 @@ if (getFlag("--secretvm")) {
     if (!composeFile) { console.log(USAGE); process.exit(1); }
     composeData = readFileSync(composeFile, "utf8");
   }
-  // Optional docker-files input (TDX-only). Either read the archive and
-  // compute SHA-256, or accept a precomputed digest.
+  // Optional docker-files input. Either read the archive and compute SHA-256,
+  // or accept a precomputed digest. For TDX the digest becomes RTMR3 log[2];
+  // for SEV it is appended as `docker_additional_files_hash=<hex>` to the
+  // kernel cmdline that feeds the launch measurement.
   const dockerFilesInput: { dockerFiles?: Buffer; dockerFilesSha256?: string } = {};
   if (dockerFilesSha256) {
     dockerFilesInput.dockerFilesSha256 = dockerFilesSha256;
@@ -283,12 +286,12 @@ if (getFlag("--secretvm")) {
     // Step 1: cryptographic quote verification
     const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
     if (raw) {
-      const workloadResult = await verifyWorkload(quoteData, composeData);
+      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
       console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
     if (json) {
-      const workloadResult = await verifyWorkload(quoteData, composeData);
+      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
       console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
       process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
     }
@@ -304,7 +307,7 @@ if (getFlag("--secretvm")) {
     }
     console.log(`✅ Authentic SecretVM confirmed: ${version.vm_type}/${version.template_name} ${version.artifacts_ver}`);
     // Step 3: workload (compose hash) verification
-    const workloadResult = await verifyWorkload(quoteData, composeData);
+    const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
     if (workloadResult.status === "authentic_match") {
       console.log(`✅ Confirmed that the VM is running the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose`);
     } else {
