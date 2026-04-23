@@ -23,6 +23,7 @@ export const VCPU_MAP: Record<string, number> = {
     medium: 2,
     large: 4,
     "2xlarge": 8,
+    "4xlarge": 16,
 };
 
 // ---------------------------------------------------------------------------

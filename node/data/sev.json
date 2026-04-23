@@ -230,5 +230,87 @@
             {"gpa": 8458240, "size": 61440, "section_type": 1},
             {"gpa": 8454144, "size": 4096, "section_type": 16}
         ]
+        },
+        {
+                "vm_type": "prod",
+                "rootfs_hash": "000659b7c50571e7c725e03cac4e18b6d80a62668ef90a0d8c4527d2b0a403ee",
+                "artifacts_ver": "v0.0.27-alpha.0",
+                "kernel_hash": "ca7645b25cb4f9af4e5c1a0ec8c182b6c5dea4462ab31cccb46427874356baae",
+                "initrd_hash": "bebefedc2d0fa09d5b9c9111d0c4a7a519fc7dc90ea7e93aa2da283ceea075c8",
+                "vcpu_type": "EPYC",
+                "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+                "sev_hashes_table_gpa": 8457216,
+                "sev_es_reset_eip": 8433668,
+                "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
+        },
+        {
+                "vm_type": "dev",
+                "rootfs_hash": "9cb5fd23b3c31aa415a904f75f5905ee0e7951b010d056bd66f1d6da4cf0a7ab",
+                "artifacts_ver": "v0.0.27-alpha.0",
+                "kernel_hash": "ca7645b25cb4f9af4e5c1a0ec8c182b6c5dea4462ab31cccb46427874356baae",
+                "initrd_hash": "bebefedc2d0fa09d5b9c9111d0c4a7a519fc7dc90ea7e93aa2da283ceea075c8",
+                "vcpu_type": "EPYC",
+                "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+                "sev_hashes_table_gpa": 8457216,
+                "sev_es_reset_eip": 8433668,
+                "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
+        },
+        {
+                "vm_type": "gpu_prod",
+                "cmdline_extra": "pci=realloc,nocrs",
+                "rootfs_hash": "0a0e8e683dbcd02f8574233ee6349ee82862847b3f2d461d0ca8cbb9754c4dfe",
+                "artifacts_ver": "v0.0.27-alpha.0",
+                "kernel_hash": "ca7645b25cb4f9af4e5c1a0ec8c182b6c5dea4462ab31cccb46427874356baae",
+                "initrd_hash": "bebefedc2d0fa09d5b9c9111d0c4a7a519fc7dc90ea7e93aa2da283ceea075c8",
+                "vcpu_type": "EPYC",
+                "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+                "sev_hashes_table_gpa": 8457216,
+                "sev_es_reset_eip": 8433668,
+                "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
+        },
+        {
+                "vm_type": "gpu_dev",
+                "cmdline_extra": "pci=realloc,nocrs",
+                "rootfs_hash": "4517b6acf750315d5855d3425fc26da5a79d331bff503202d836f4c70e799433",
+                "artifacts_ver": "v0.0.27-alpha.0",
+                "kernel_hash": "ca7645b25cb4f9af4e5c1a0ec8c182b6c5dea4462ab31cccb46427874356baae",
+                "initrd_hash": "bebefedc2d0fa09d5b9c9111d0c4a7a519fc7dc90ea7e93aa2da283ceea075c8",
+                "vcpu_type": "EPYC",
+                "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+                "sev_hashes_table_gpa": 8457216,
+                "sev_es_reset_eip": 8433668,
+                "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
         }
 ]

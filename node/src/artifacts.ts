@@ -136,6 +136,8 @@ export interface SevArtifactEntry {
     sev_hashes_table_gpa: number;
     sev_es_reset_eip: number;
     ovmf_sections: Array<{ gpa: number; size: number; section_type: number }>;
+    /** Extra kernel cmdline tokens inserted after loglevel=7 (e.g. "pci=realloc,nocrs") */
+    cmdline_extra?: string;
 }
 
 function sevJsonPath(): string {

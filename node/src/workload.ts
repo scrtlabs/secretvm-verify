@@ -9,7 +9,7 @@ import {
     type SevArtifactEntry,
 } from "./artifacts.js";
 import { calculateRtmr3 } from "./rtmr.js";
-import { calcSevMeasurement, parseSevFamilyId } from "./sevGctx.js";
+import { calcSevMeasurement, parseSevFamilyId, VCPU_MAP } from "./sevGctx.js";
 import { createHash } from "node:crypto";
 
 // ---------------------------------------------------------------------------
@@ -260,7 +260,6 @@ export async function verifySevWorkload(
     try {
         quoteMeasurement = raw.subarray(0x090, 0x090 + 48).toString("hex");
         family = parseSevFamilyId(raw.subarray(0x010, 0x020));
-        if (!family) return { status: "not_authentic" };
         imageId = raw.subarray(0x020, 0x030).toString("utf8").replace(/[\x00#]+$/, "");
     } catch {
         return { status: "not_authentic" };
@@ -273,16 +272,44 @@ export async function verifySevWorkload(
         return { status: "not_authentic" };
     }
 
-    const { vmType, templateName, vcpus } = family;
-
     // raw SHA256 — matches jeeves compute_file_hash() (no YAML normalization)
     const composeHash = createHash("sha256").update(compose, "utf8").digest("hex");
+
+    if (!family) {
+        // family_id not set — brute-force all registry entries and vcpu counts
+        for (const entry of registry) {
+            for (const [templateName, vcpus] of Object.entries(VCPU_MAP)) {
+                const prefix = entry.cmdline_extra
+                    ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
+                    : `console=ttyS0 loglevel=7`;
+                let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+                if (dockerFilesSha256) cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+                try {
+                    if (calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement) {
+                        return {
+                            status: "authentic_match",
+                            template_name: templateName,
+                            vm_type: entry.vm_type,
+                            artifacts_ver: entry.artifacts_ver,
+                            env: entry.vm_type,
+                        };
+                    }
+                } catch { /* skip */ }
+            }
+        }
+        return { status: "not_authentic" };
+    }
+
+    const { vmType, templateName, vcpus } = family;
 
     const candidates = registry.filter((e) => e.vm_type === vmType);
     const versionEntries = imageId ? candidates.filter((e) => e.artifacts_ver === imageId) : [];
 
     function tryEntry(entry: SevArtifactEntry): boolean {
-        let cmdline = `console=ttyS0 loglevel=7 docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+        const prefix = entry.cmdline_extra
+            ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
+            : `console=ttyS0 loglevel=7`;
+        let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
         if (dockerFilesSha256) {
             cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
         }

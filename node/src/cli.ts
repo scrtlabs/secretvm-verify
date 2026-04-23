@@ -178,250 +178,254 @@ let result: AttestationResult;
 
 try {
 
-if (getFlag("--secretvm")) {
-  const url = getFlagValue("--secretvm") ?? getPositional();
-  if (!url) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  if (!jsonOut) console.log(`Verifying ${url}\n`);
-  result = await checkSecretVm(url, product, reloadAmdKds);
-} else if (getFlag("--cpu")) {
-  const quoteData = await getCpuQuote("--cpu");
-  const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
-  if (!jsonOut) console.log(`Verifying CPU quote from ${source} ...\n`);
-  result = await checkCpuAttestation(quoteData, product, reloadAmdKds);
-  result = await mergeProofOfCloud(result, quoteData);
-} else if (getFlag("--tdx")) {
-  const quoteData = await getCpuQuote("--tdx");
-  const source = vmUrl ? vmUrl : getFlagValue("--tdx") ?? getPositional();
-  if (!jsonOut) console.log(`Verifying TDX quote from ${source} ...\n`);
-  result = await checkTdxCpuAttestation(quoteData);
-  result = await mergeProofOfCloud(result, quoteData);
-} else if (getFlag("--sev")) {
-  const quoteData = await getCpuQuote("--sev");
-  const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
-  if (!jsonOut) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
-  result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
-  result = await mergeProofOfCloud(result, quoteData);
-} else if (getFlag("--gpu")) {
-  const quoteData = await getGpuQuote("--gpu");
-  const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
-  if (!jsonOut) console.log(`Verifying NVIDIA GPU attestation from ${source} ...\n`);
-  result = await checkNvidiaGpuAttestation(quoteData);
-} else if (getFlag("--resolve-version") || getFlag("-rv")) {
-  const quoteData = await getCpuQuote("--resolve-version", "-rv");
-  const quoteType = detectCpuQuoteType(quoteData);
-  if (quoteType === "SEV-SNP") {
-    // Step 1: cryptographic quote verification
-    const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
-    // Step 2: registry lookup
-    const version = await resolveAmdSevVersion(quoteData);
-    if (raw) {
-      console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
-      process.exit(quoteResult.valid && !!version ? 0 : 1);
-    }
-    if (json) {
-      console.log(JSON.stringify({ quote: minimalJson(quoteResult), version }, null, 2));
-      process.exit(quoteResult.valid && !!version ? 0 : 1);
-    }
-    if (!quoteResult.valid) {
-      console.log("🚫 Quote cryptographic verification failed");
+  if (getFlag("--secretvm")) {
+    const url = getFlagValue("--secretvm") ?? getPositional();
+    if (!url) {
+      console.log(USAGE);
       process.exit(1);
     }
-    if (version) {
-      console.log(`✅ Authentic SecretVM confirmed`);
-      console.log(`Template: ${version.template_name}`);
-      console.log(`VM type:  ${version.vm_type}`);
-      console.log(`Version:  ${version.artifacts_ver}`);
-    } else {
-      console.log("🚫 SecretVM artifacts not found in registry (unknown version)");
-    }
-    process.exit(quoteResult.valid && !!version ? 0 : 1);
-  } else {
-    const quoteResult = await checkTdxCpuAttestation(quoteData);
-    const version = await resolveSecretVmVersion(quoteData);
-    if (raw) {
-      console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+    if (!jsonOut) console.log(`Verifying ${url}\n`);
+    result = await checkSecretVm(url, product, reloadAmdKds);
+  } else if (getFlag("--cpu")) {
+    const quoteData = await getCpuQuote("--cpu");
+    const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
+    if (!jsonOut) console.log(`Verifying CPU quote from ${source} ...\n`);
+    result = await checkCpuAttestation(quoteData, product, reloadAmdKds);
+    result = await mergeProofOfCloud(result, quoteData);
+  } else if (getFlag("--tdx")) {
+    const quoteData = await getCpuQuote("--tdx");
+    const source = vmUrl ? vmUrl : getFlagValue("--tdx") ?? getPositional();
+    if (!jsonOut) console.log(`Verifying TDX quote from ${source} ...\n`);
+    result = await checkTdxCpuAttestation(quoteData);
+    result = await mergeProofOfCloud(result, quoteData);
+  } else if (getFlag("--sev")) {
+    const quoteData = await getCpuQuote("--sev");
+    const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
+    if (!jsonOut) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
+    result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
+    result = await mergeProofOfCloud(result, quoteData);
+  } else if (getFlag("--gpu")) {
+    const quoteData = await getGpuQuote("--gpu");
+    const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
+    if (!jsonOut) console.log(`Verifying NVIDIA GPU attestation from ${source} ...\n`);
+    result = await checkNvidiaGpuAttestation(quoteData);
+  } else if (getFlag("--resolve-version") || getFlag("-rv")) {
+    const quoteData = await getCpuQuote("--resolve-version", "-rv");
+    const quoteType = detectCpuQuoteType(quoteData);
+    if (quoteType === "SEV-SNP") {
+      // Step 1: cryptographic quote verification
+      const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
+      // Step 2: registry lookup
+      const version = await resolveAmdSevVersion(quoteData);
+      if (raw) {
+        console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+        process.exit(quoteResult.valid && !!version ? 0 : 1);
+      }
+      if (json) {
+        console.log(JSON.stringify({ quote: minimalJson(quoteResult), version }, null, 2));
+        process.exit(quoteResult.valid && !!version ? 0 : 1);
+      }
+      if (!quoteResult.valid) {
+        console.log("🚫 Quote cryptographic verification failed");
+        process.exit(1);
+      }
+      if (version) {
+        console.log(`✅ Authentic SecretVM confirmed`);
+        console.log(`Template: ${version.template_name}`);
+        console.log(`VM type:  ${version.vm_type}`);
+        console.log(`Version:  ${version.artifacts_ver}`);
+      } else {
+        console.log("🚫 SecretVM artifacts not found in registry (unknown version)");
+      }
       process.exit(quoteResult.valid && !!version ? 0 : 1);
-    }
-    if (json) {
-      console.log(JSON.stringify({ quote: minimalJson(quoteResult), version }, null, 2));
-      process.exit(quoteResult.valid && !!version ? 0 : 1);
-    }
-    if (!quoteResult.valid) {
-      console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
-      process.exit(1);
-    }
-    if (version) {
-      console.log(`Template: ${version.template_name}`);
-      console.log(`Version:  ${version.artifacts_ver}`);
     } else {
-      console.log("No matching SecretVM version found in registry.");
+      const quoteResult = await checkTdxCpuAttestation(quoteData);
+      const version = await resolveSecretVmVersion(quoteData);
+      if (raw) {
+        console.log(JSON.stringify({ quote: quoteResult, version }, null, 2));
+        process.exit(quoteResult.valid && !!version ? 0 : 1);
+      }
+      if (json) {
+        console.log(JSON.stringify({ quote: minimalJson(quoteResult), version }, null, 2));
+        process.exit(quoteResult.valid && !!version ? 0 : 1);
+      }
+      if (!quoteResult.valid) {
+        console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
+        process.exit(1);
+      }
+      if (version) {
+        console.log(`Template: ${version.template_name}`);
+        console.log(`Version:  ${version.artifacts_ver}`);
+      } else {
+        console.log("No matching SecretVM version found in registry.");
+      }
+      process.exit(!!version ? 0 : 1);
     }
-    process.exit(!!version ? 0 : 1);
-  }
-} else if (getFlag("--verify-workload") || getFlag("-vw")) {
-  const quoteData = await getCpuQuote("--verify-workload", "-vw");
-  let composeData: string;
-  if (vmUrl) {
-    composeData = await fetchFromVm("docker-compose");
-  } else {
-    const composeFile = getFlagValue("--compose");
-    if (!composeFile) { console.log(USAGE); process.exit(1); }
-    composeData = readFileSync(composeFile, "utf8");
-  }
-  // Optional docker-files input. Either read the archive and compute SHA-256,
-  // or accept a precomputed digest. For TDX the digest becomes RTMR3 log[2];
-  // for SEV it is appended as `docker_additional_files_hash=<hex>` to the
-  // kernel cmdline that feeds the launch measurement.
-  const dockerFilesInput: { dockerFiles?: Buffer; dockerFilesSha256?: string } = {};
-  if (dockerFilesSha256) {
-    dockerFilesInput.dockerFilesSha256 = dockerFilesSha256;
-  } else if (dockerFilesPath) {
-    dockerFilesInput.dockerFiles = readFileSync(dockerFilesPath);
-  }
-  const quoteType = detectCpuQuoteType(quoteData);
-  if (quoteType === "SEV-SNP") {
-    // Step 1: cryptographic quote verification
-    const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
-    if (raw) {
+  } else if (getFlag("--verify-workload") || getFlag("-vw")) {
+    const quoteData = await getCpuQuote("--verify-workload", "-vw");
+    let composeData: string;
+    if (vmUrl) {
+      composeData = await fetchFromVm("docker-compose");
+    } else {
+      const composeFile = getFlagValue("--compose");
+      if (!composeFile) { console.log(USAGE); process.exit(1); }
+      composeData = readFileSync(composeFile, "utf8");
+    }
+    // Optional docker-files input. Either read the archive and compute SHA-256,
+    // or accept a precomputed digest. For TDX the digest becomes RTMR3 log[2];
+    // for SEV it is appended as `docker_additional_files_hash=<hex>` to the
+    // kernel cmdline that feeds the launch measurement.
+    const dockerFilesInput: { dockerFiles?: Buffer; dockerFilesSha256?: string } = {};
+    if (dockerFilesSha256) {
+      dockerFilesInput.dockerFilesSha256 = dockerFilesSha256;
+    } else if (dockerFilesPath) {
+      dockerFilesInput.dockerFiles = readFileSync(dockerFilesPath);
+    }
+    const quoteType = detectCpuQuoteType(quoteData);
+    if (quoteType === "SEV-SNP") {
+      // Step 1: cryptographic quote verification
+      const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
+      if (raw) {
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
+        process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+      }
+      if (json) {
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
+        process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+      }
+      if (!quoteResult.valid) {
+        console.log("🚫 Quote cryptographic verification failed");
+        process.exit(1);
+      }
+      // Workload verification — authoritative; also identifies VM version
       const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
-      console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
-      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
-    }
-    if (json) {
-      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
-      console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
-      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
-    }
-    if (!quoteResult.valid) {
-      console.log("🚫 Quote cryptographic verification failed");
-      process.exit(1);
-    }
-    // Step 2: registry lookup — confirms this is a known SecretVM
-    const version = await resolveAmdSevVersion(quoteData);
-    if (!version) {
-      console.log("🚫 SecretVM artifacts not found in registry (unknown version)");
-      process.exit(1);
-    }
-    console.log(`✅ Authentic SecretVM confirmed: ${version.vm_type}/${version.template_name} ${version.artifacts_ver}`);
-    // Step 3: workload (compose hash) verification
-    const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
-    if (workloadResult.status === "authentic_match") {
-      console.log(`✅ Confirmed that the VM is running the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose`);
-    } else {
       const src = vmUrl ? `the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose` : "the specified docker-compose.yaml";
-      console.log(`🚫 Attestation does not match ${src}`);
-    }
-    process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
-  } else {
-    const quoteResult = await checkTdxCpuAttestation(quoteData);
-    if (raw) {
+      if (workloadResult.status === "authentic_match") {
+        console.log(`✅ Authentic SecretVM confirmed: ${workloadResult.template_name} ${workloadResult.artifacts_ver} (${workloadResult.env})`);
+        console.log(`✅ Confirmed that the VM is running ${src}`);
+      } else if (workloadResult.status === "authentic_mismatch") {
+        console.log(`✅ Authentic SecretVM confirmed: ${workloadResult.template_name} ${workloadResult.artifacts_ver} (${workloadResult.env})`);
+        console.log(`🚫 Attestation does not match ${src}`);
+      } else {
+        // not_authentic: try version lookup to give a richer error message
+        const version = await resolveAmdSevVersion(quoteData);
+        if (version) {
+          console.log(`✅ Authentic SecretVM (${version.vm_type}/${version.template_name} ${version.artifacts_ver})`);
+          console.log(`🚫 Attestation does not match ${src}`);
+        } else {
+          console.log("🚫 SecretVM artifacts not found in registry");
+        }
+      }
+      process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
+    } else {
+      const quoteResult = await checkTdxCpuAttestation(quoteData);
+      if (raw) {
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
+        process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+      }
+      if (json) {
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
+        process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+      }
+      if (!quoteResult.valid) {
+        console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
+        process.exit(1);
+      }
       const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
-      console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
-      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
+      console.log(formatWorkloadResult(workloadResult, vmUrl));
+      process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
     }
-    if (json) {
-      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
-      console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
-      process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
-    }
-    if (!quoteResult.valid) {
-      console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
+  } else if (getFlag("--check-agent")) {
+    const id = getFlagValue("--check-agent");
+    const chain = getFlagValue("--chain");
+    if (!id || !chain) {
+      console.log(USAGE);
       process.exit(1);
     }
-    const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
-    console.log(formatWorkloadResult(workloadResult, vmUrl));
-    process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
+    if (!jsonOut) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
+    result = await checkAgent(Number(id), chain, reloadAmdKds);
+  } else if (getFlag("--agent")) {
+    const file = getFlagValue("--agent") ?? getPositional();
+    if (!file) {
+      console.log(USAGE);
+      process.exit(1);
+    }
+    const metadata = JSON.parse(readFileSync(file, "utf8"));
+    if (!jsonOut) console.log(`Verifying agent "${metadata.name}" ...\n`);
+    result = await verifyAgent(metadata, reloadAmdKds);
+  } else {
+    // Legacy: bare URL defaults to --secretvm
+    const url = getPositional();
+    if (!url) {
+      console.log(USAGE);
+      process.exit(1);
+    }
+    if (!jsonOut) console.log(`Verifying ${url}\n`);
+    result = await checkSecretVm(url, product, reloadAmdKds);
   }
-} else if (getFlag("--check-agent")) {
-  const id = getFlagValue("--check-agent");
-  const chain = getFlagValue("--chain");
-  if (!id || !chain) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  if (!jsonOut) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
-  result = await checkAgent(Number(id), chain, reloadAmdKds);
-} else if (getFlag("--agent")) {
-  const file = getFlagValue("--agent") ?? getPositional();
-  if (!file) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  const metadata = JSON.parse(readFileSync(file, "utf8"));
-  if (!jsonOut) console.log(`Verifying agent "${metadata.name}" ...\n`);
-  result = await verifyAgent(metadata, reloadAmdKds);
-} else {
-  // Legacy: bare URL defaults to --secretvm
-  const url = getPositional();
-  if (!url) {
-    console.log(USAGE);
-    process.exit(1);
-  }
-  if (!jsonOut) console.log(`Verifying ${url}\n`);
-  result = await checkSecretVm(url, product, reloadAmdKds);
-}
 
-// Output
-if (raw) {
-  console.log(JSON.stringify(result, null, 2));
+  // Output
+  if (raw) {
+    console.log(JSON.stringify(result, null, 2));
+    process.exit(result.valid ? 0 : 1);
+  }
+  if (json) {
+    console.log(JSON.stringify(minimalJson(result), null, 2));
+    process.exit(result.valid ? 0 : 1);
+  }
+
+  const report = result.report;
+
+  console.log("Checks:");
+  for (const [name, passed] of Object.entries(result.checks)) {
+    if (name === "gpu_quote_fetched" && !passed) {
+      console.log(`  ${"gpu:".padEnd(35)} GPU not present`);
+      continue;
+    }
+    const status = passed ? "PASS" : "FAIL";
+    console.log(`  ${(name + ":").padEnd(35)} ${status}`);
+  }
+
+  if (verbose) {
+    // For direct --tdx/--sev calls the CPU fields live at report top-level.
+    // After mergeProofOfCloud splices proof_of_cloud into report, we must
+    // exclude it from the CPU quote dump or it renders twice.
+    let cpuQuote: any = null;
+    if (report.cpu) {
+      cpuQuote = report.cpu;
+    } else if (["TDX", "SEV-SNP"].includes(result.attestationType)) {
+      const { proof_of_cloud: _poc, ...cpuFields } = report;
+      cpuQuote = cpuFields;
+    }
+    const gpuQuote =
+      report.gpu ??
+      (result.attestationType === "NVIDIA-GPU" ? report : null);
+    const poc = report.proof_of_cloud;
+    if (cpuQuote) {
+      console.log("\nCPU quote:");
+      console.log(JSON.stringify(cpuQuote, null, 2));
+    }
+    if (gpuQuote) {
+      console.log("\nGPU quote:");
+      console.log(JSON.stringify(gpuQuote, null, 2));
+    }
+    if (poc) {
+      console.log("\nProof of cloud:");
+      console.log(JSON.stringify(poc, null, 2));
+    }
+  }
+
+  if (result.errors.length > 0) {
+    console.log("\nErrors:");
+    for (const err of result.errors) console.log(`  - ${err}`);
+  }
+
+  console.log(`\n${result.valid ? "✅ All Passed" : "🚫 Failed"}`);
   process.exit(result.valid ? 0 : 1);
-}
-if (json) {
-  console.log(JSON.stringify(minimalJson(result), null, 2));
-  process.exit(result.valid ? 0 : 1);
-}
-
-const report = result.report;
-
-console.log("Checks:");
-for (const [name, passed] of Object.entries(result.checks)) {
-  if (name === "gpu_quote_fetched" && !passed) {
-    console.log(`  ${"gpu:".padEnd(35)} GPU not present`);
-    continue;
-  }
-  const status = passed ? "PASS" : "FAIL";
-  console.log(`  ${(name + ":").padEnd(35)} ${status}`);
-}
-
-if (verbose) {
-  // For direct --tdx/--sev calls the CPU fields live at report top-level.
-  // After mergeProofOfCloud splices proof_of_cloud into report, we must
-  // exclude it from the CPU quote dump or it renders twice.
-  let cpuQuote: any = null;
-  if (report.cpu) {
-    cpuQuote = report.cpu;
-  } else if (["TDX", "SEV-SNP"].includes(result.attestationType)) {
-    const { proof_of_cloud: _poc, ...cpuFields } = report;
-    cpuQuote = cpuFields;
-  }
-  const gpuQuote =
-    report.gpu ??
-    (result.attestationType === "NVIDIA-GPU" ? report : null);
-  const poc = report.proof_of_cloud;
-  if (cpuQuote) {
-    console.log("\nCPU quote:");
-    console.log(JSON.stringify(cpuQuote, null, 2));
-  }
-  if (gpuQuote) {
-    console.log("\nGPU quote:");
-    console.log(JSON.stringify(gpuQuote, null, 2));
-  }
-  if (poc) {
-    console.log("\nProof of cloud:");
-    console.log(JSON.stringify(poc, null, 2));
-  }
-}
-
-if (result.errors.length > 0) {
-  console.log("\nErrors:");
-  for (const err of result.errors) console.log(`  - ${err}`);
-}
-
-console.log(`\n${result.valid ? "✅ All Passed" : "🚫 Failed"}`);
-process.exit(result.valid ? 0 : 1);
 
 } catch (err: any) {
   console.error(`Error: ${formatError(err)}`);

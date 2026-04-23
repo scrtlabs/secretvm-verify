@@ -126,8 +126,8 @@ def get_ovmf_hash_and_meta(ovmf_path: str, sev_snp_measure_path: Path) -> dict:
     }
 
 
-def build_entries(version: str, asset_map: dict[str, str], ovmf_meta: dict) -> list[dict]:
-    """Build the prod and dev sev.json entries for the given version."""
+def build_entries(version: str, asset_map: dict[str, str], ovmf_meta: dict, gpu: bool = False) -> list[dict]:
+    """Build the prod and dev (or gpu_prod and gpu_dev) sev.json entries for the given version."""
     def _get_hash(name: str) -> str:
         h = asset_map.get(name)
         if not h:
@@ -137,8 +137,15 @@ def build_entries(version: str, asset_map: dict[str, str], ovmf_meta: dict) -> l
 
     kernel_hash = _get_hash(f"bzImage-{version}-sev")
     initrd_hash = _get_hash(f"initramfs-{version}-sev.cpio.gz")
-    rootfs_prod = _get_hash(f"rootfs-prod-{version}-sev.iso")
-    rootfs_dev = _get_hash(f"rootfs-dev-{version}-sev.iso")
+
+    if gpu:
+        rootfs_prod = _get_hash(f"rootfs-gpu-prod-{version}-sev.iso")
+        rootfs_dev = _get_hash(f"rootfs-gpu-dev-{version}-sev.iso")
+        vm_type_prod, vm_type_dev = "gpu_prod", "gpu_dev"
+    else:
+        rootfs_prod = _get_hash(f"rootfs-prod-{version}-sev.iso")
+        rootfs_dev = _get_hash(f"rootfs-dev-{version}-sev.iso")
+        vm_type_prod, vm_type_dev = "prod", "dev"
 
     base = {
         "artifacts_ver": version,
@@ -149,8 +156,8 @@ def build_entries(version: str, asset_map: dict[str, str], ovmf_meta: dict) -> l
     }
 
     return [
-        {"vm_type": "prod", "rootfs_hash": rootfs_prod, **base},
-        {"vm_type": "dev", "rootfs_hash": rootfs_dev, **base},
+        {"vm_type": vm_type_prod, "rootfs_hash": rootfs_prod, **base},
+        {"vm_type": vm_type_dev, "rootfs_hash": rootfs_dev, **base},
     ]
 
 
@@ -196,6 +203,8 @@ def main() -> None:
                         help="Path to the sev-snp-measure repo checkout")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print what would be written without modifying sev.json")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Use GPU rootfs assets (rootfs-gpu-prod/dev-*) with vm_types gpu_prod/gpu_dev")
     args = parser.parse_args()
 
     version = args.version
@@ -237,7 +246,7 @@ def main() -> None:
         ovmf_meta = get_ovmf_hash_and_meta(ovmf_tmp, snp_path)
 
     print("\nBuilding registry entries …")
-    new_entries = build_entries(version, asset_map, ovmf_meta)
+    new_entries = build_entries(version, asset_map, ovmf_meta, gpu=args.gpu)
 
     for e in new_entries:
         print(f"  [{e['vm_type']:4}]  kernel={e['kernel_hash'][:16]}…  "
