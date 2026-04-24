@@ -2,6 +2,12 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.8.3] — 2026-04-24
+
+### Changed
+
+- CLI help text polish: `--product` marked as optional (auto-detected); `--proof-of-cloud` description shortened to "Verify if the machine is registered with ProofOfCloud alliance. Optional".
+
 ## [0.8.2] — 2026-04-24
 
 ### Added

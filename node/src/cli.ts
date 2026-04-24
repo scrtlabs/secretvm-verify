@@ -166,15 +166,13 @@ Commands:
 Options:
   --vm <url>           Fetch quote from a VM instead of a file (works with --cpu, --tdx, --sev, --gpu, -rv, -vw)
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
-  --product NAME       AMD product name (Genoa, Milan, Turin)
+  --product NAME       AMD product name (Genoa, Milan, Turin). Optional; auto-detected if omitted.
   --json               Output minimal JSON (valid, checks, errors) — omits the report fields
   --raw                Output full JSON result (includes the parsed report fields)
   --verbose, -v        Print all attestation report fields (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
-  --proof-of-cloud     Also ask SCRT Labs' quote-parse endpoint to confirm the
-                       quote originated on a Secret VM (adds proof_of_cloud_verified).
-                       Opt-in; off by default.
+  --proof-of-cloud     Verify if the machine is registered with ProofOfCloud alliance. Optional
   --show-compose       Print the docker-compose.yaml that was verified, after the
                        check list. Works with --secretvm, --verify-workload,
                        --check-agent, --agent.
