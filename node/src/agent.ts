@@ -4,7 +4,7 @@ import { AttestationResult, makeResult, orderChecks } from "./types.js";
 import type { AgentMetadata, AgentService } from "./types.js";
 import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
-import { checkProofOfCloud } from "./proofOfCloud.js";
+import { checkProofOfCloud as checkProofOfCloud_ } from "./proofOfCloud.js";
 import { verifyWorkload } from "./workload.js";
 import { extractDockerCompose, getTlsCertFingerprint } from "./url.js";
 
@@ -158,6 +158,7 @@ export async function resolveAgent(
 export async function verifyAgent(
   metadata: AgentMetadata,
   reloadAmdKds = false,
+  checkProofOfCloud = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -302,6 +303,7 @@ export async function verifyAgent(
     const workloadResult = await verifyWorkload(cpuData, dockerCompose);
     checks.workload_binding_verified = workloadResult.status === "authentic_match";
     report.workload = workloadResult;
+    report.docker_compose = dockerCompose;
     if (workloadResult.status === "authentic_mismatch") {
       errors.push("Workload mismatch: VM is authentic but docker-compose does not match");
     } else if (workloadResult.status === "not_authentic") {
@@ -312,14 +314,16 @@ export async function verifyAgent(
     checks.workload_fetched = false;
   }
 
-  // 8. Proof of cloud: confirm the quote was produced on a Secret VM.
-  const pocResult = await checkProofOfCloud(cpuData);
-  checks.proof_of_cloud_verified = pocResult.valid;
-  if (pocResult.report.proof_of_cloud !== undefined) {
-    report.proof_of_cloud = pocResult.report.proof_of_cloud;
-  }
-  if (!pocResult.valid) {
-    errors.push(...pocResult.errors);
+  // 8. Proof of cloud (opt-in): confirm the quote was produced on a Secret VM.
+  if (checkProofOfCloud) {
+    const pocResult = await checkProofOfCloud_(cpuData);
+    checks.proof_of_cloud_verified = pocResult.valid;
+    if (pocResult.report.proof_of_cloud !== undefined) {
+      report.proof_of_cloud = pocResult.report.proof_of_cloud;
+    }
+    if (!pocResult.valid) {
+      errors.push(...pocResult.errors);
+    }
   }
 
   // Overall validity
@@ -330,8 +334,10 @@ export async function verifyAgent(
     checks.cpu_quote_verified,
     checks.tls_binding_verified,
     !!checks.workload_binding_verified,
-    !!checks.proof_of_cloud_verified,
   ];
+  if (checkProofOfCloud) {
+    requiredChecks.push(!!checks.proof_of_cloud_verified);
+  }
   if (gpuPresent) {
     requiredChecks.push(!!checks.gpu_quote_verified);
     requiredChecks.push(!!checks.gpu_binding_verified);
@@ -358,6 +364,7 @@ export async function checkAgent(
   agentId: number,
   chain: string,
   reloadAmdKds = false,
+  checkProofOfCloud = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -372,7 +379,7 @@ export async function checkAgent(
     return makeResult("ERC-8004", { checks: orderChecks(checks), errors });
   }
 
-  const result = await verifyAgent(metadata, reloadAmdKds);
+  const result = await verifyAgent(metadata, reloadAmdKds, checkProofOfCloud);
   result.checks = { agent_resolved: true, ...result.checks };
 
   return result;

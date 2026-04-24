@@ -71,6 +71,13 @@ const reloadAmdKds = getFlag("--reload-amd-kds");
 // `--docker-files-sha256 <hex>` supplies the digest directly (skip the read).
 const dockerFilesPath = getFlagValue("--docker-files");
 const dockerFilesSha256 = getFlagValue("--docker-files-sha256");
+// Opt-in proof-of-cloud (POSTs the CPU quote to SCRT Labs' quote-parse
+// endpoint). Off by default across all verbs; pass --proof-of-cloud to enable.
+const checkPoc = getFlag("--proof-of-cloud");
+// When set, prints the docker-compose.yaml after the check list so the
+// verifier can see the actual workload that was measured. Works with
+// --secretvm, --verify-workload, --check-agent, --agent.
+const showCompose = getFlag("--show-compose");
 
 const SECRET_VM_PORT = 29343;
 
@@ -130,6 +137,8 @@ Commands:
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain
   --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
+  --compose <file|--vm url>         Fetch (from a VM or a file) and print the docker-compose
+                                    to stdout. No verification. Useful for piping.
 
 Options:
   --vm <url>           Fetch quote from a VM instead of a file (works with --cpu, --tdx, --sev, --gpu, -rv, -vw)
@@ -140,6 +149,12 @@ Options:
   --verbose, -v        Print all attestation report fields (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
+  --proof-of-cloud     Also ask SCRT Labs' quote-parse endpoint to confirm the
+                       quote originated on a Secret VM (adds proof_of_cloud_verified).
+                       Opt-in; off by default.
+  --show-compose       Print the docker-compose.yaml that was verified, after the
+                       check list. Works with --secretvm, --verify-workload,
+                       --check-agent, --agent.
 
 Examples:
   secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
@@ -156,7 +171,10 @@ Examples:
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files-sha256 <hex>
   secretvm-verify --check-agent 38114 --chain base
   secretvm-verify --check-agent 38114 --chain base -v
-  secretvm-verify --agent metadata.json`;
+  secretvm-verify --agent metadata.json
+  secretvm-verify --secretvm blue-moose.vm.scrtlabs.com --show-compose
+  secretvm-verify --compose --vm blue-moose.vm.scrtlabs.com
+  secretvm-verify --compose docker-compose.yaml`;
 
 function formatError(err: any): string {
   const cause = err?.cause;
@@ -185,25 +203,25 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds);
+    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc);
   } else if (getFlag("--cpu")) {
     const quoteData = await getCpuQuote("--cpu");
     const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
     if (!jsonOut) console.log(`Verifying CPU quote from ${source} ...\n`);
     result = await checkCpuAttestation(quoteData, product, reloadAmdKds);
-    result = await mergeProofOfCloud(result, quoteData);
+    if (checkPoc) result = await mergeProofOfCloud(result, quoteData);
   } else if (getFlag("--tdx")) {
     const quoteData = await getCpuQuote("--tdx");
     const source = vmUrl ? vmUrl : getFlagValue("--tdx") ?? getPositional();
     if (!jsonOut) console.log(`Verifying TDX quote from ${source} ...\n`);
     result = await checkTdxCpuAttestation(quoteData);
-    result = await mergeProofOfCloud(result, quoteData);
+    if (checkPoc) result = await mergeProofOfCloud(result, quoteData);
   } else if (getFlag("--sev")) {
     const quoteData = await getCpuQuote("--sev");
     const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
     if (!jsonOut) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
     result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
-    result = await mergeProofOfCloud(result, quoteData);
+    if (checkPoc) result = await mergeProofOfCloud(result, quoteData);
   } else if (getFlag("--gpu")) {
     const quoteData = await getGpuQuote("--gpu");
     const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
@@ -318,6 +336,10 @@ try {
           console.log("🚫 SecretVM artifacts not found in registry");
         }
       }
+      if (showCompose) {
+        console.log("\nDocker compose:");
+        console.log(composeData);
+      }
       process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
     } else {
       const quoteResult = await checkTdxCpuAttestation(quoteData);
@@ -337,6 +359,10 @@ try {
       }
       const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
       console.log(formatWorkloadResult(workloadResult, vmUrl));
+      if (showCompose) {
+        console.log("\nDocker compose:");
+        console.log(composeData);
+      }
       process.exit(workloadResult.status === "authentic_match" ? 0 : 1);
     }
   } else if (getFlag("--check-agent")) {
@@ -347,7 +373,7 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
-    result = await checkAgent(Number(id), chain, reloadAmdKds);
+    result = await checkAgent(Number(id), chain, reloadAmdKds, checkPoc);
   } else if (getFlag("--agent")) {
     const file = getFlagValue("--agent") ?? getPositional();
     if (!file) {
@@ -356,7 +382,25 @@ try {
     }
     const metadata = JSON.parse(readFileSync(file, "utf8"));
     if (!jsonOut) console.log(`Verifying agent "${metadata.name}" ...\n`);
-    result = await verifyAgent(metadata, reloadAmdKds);
+    result = await verifyAgent(metadata, reloadAmdKds, checkPoc);
+  } else if (getFlag("--compose") && !getFlag("--verify-workload") && !getFlag("-vw")) {
+    // Standalone verb: just fetch/read the docker-compose and print to stdout.
+    // (`--compose` also works as an option inside `--verify-workload`; the guard
+    // above prevents that mode from falling through here.)
+    let composeData: string;
+    if (vmUrl) {
+      composeData = await fetchFromVm("docker-compose");
+    } else {
+      const composeFile = getFlagValue("--compose") ?? getPositional();
+      if (!composeFile || composeFile.startsWith("--")) {
+        console.log(USAGE);
+        process.exit(1);
+      }
+      composeData = readFileSync(composeFile, "utf8");
+    }
+    process.stdout.write(composeData);
+    if (!composeData.endsWith("\n")) process.stdout.write("\n");
+    process.exit(0);
   } else {
     // Legacy: bare URL defaults to --secretvm
     const url = getPositional();
@@ -365,7 +409,7 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds);
+    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc);
   }
 
   // Output
@@ -422,6 +466,11 @@ try {
   if (result.errors.length > 0) {
     console.log("\nErrors:");
     for (const err of result.errors) console.log(`  - ${err}`);
+  }
+
+  if (showCompose && typeof report.docker_compose === "string") {
+    console.log("\nDocker compose:");
+    console.log(report.docker_compose);
   }
 
   console.log(`\n${result.valid ? "✅ All Passed" : "🚫 Failed"}`);

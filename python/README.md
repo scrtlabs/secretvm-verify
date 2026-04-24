@@ -9,7 +9,7 @@ Attestation verification SDK for confidential computing environments. Verifies I
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX or SEV-SNP quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image and verifies the exact compose file that was booted.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates TLS and GPU cryptographic bindings.
-- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Included in the default `check_secret_vm` flow and exposed as a standalone `check_proof_of_cloud` / `check_proof_of_cloud_async` function.
+- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Opt-in: pass `check_proof_of_cloud=True` to `check_secret_vm` / `check_agent` / `verify_agent`, or use `--proof-of-cloud` on the CLI. A standalone `check_proof_of_cloud` / `check_proof_of_cloud_async` function is also exposed.
 - **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow. Three composable functions:
   - **`resolve_agent`** — Queries the on-chain registry contract for the agent's metadata.
   - **`verify_agent`** — Takes agent metadata and runs full TEE verification against the agent's declared endpoints.
@@ -141,13 +141,17 @@ All functions return an `AttestationResult` with these fields:
 
 ### Functions
 
-#### `check_secret_vm(url, product="")`
+#### `check_secret_vm(url, product="", reload_amd_kds=False, check_proof_of_cloud=False)`
 
 End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GPU quotes, verifies both, and checks TLS and GPU bindings.
 
 **Parameters:**
 - `url` — VM address (e.g., `"my-vm.example.com"`, `"https://my-vm:29343"`)
 - `product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
+- `reload_amd_kds` — If `True`, bypass the AMD KDS cache (no effect on TDX).
+- `check_proof_of_cloud` — If `True`, also POST the quote to SCRT Labs' `/api/quote-parse` endpoint. Opt-in; off by default.
+
+The returned `result.report["docker_compose"]` contains the raw docker-compose the VM served.
 
 #### `check_cpu_attestation(data, product="")`
 

@@ -345,7 +345,7 @@ class TestSecretVm:
                 _mock_response(gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343")
+            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
         assert result.valid is True
         assert result.attestation_type == "SECRET-VM"
@@ -373,7 +373,7 @@ class TestSecretVm:
                 _mock_response(no_gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343")
+            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
         assert result.valid is True
         assert result.checks["tls_binding_verified"] is True
@@ -401,7 +401,7 @@ class TestSecretVm:
                 _mock_response(no_gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343")
+            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
         assert result.valid is False
         assert result.checks["proof_of_cloud_verified"] is False
@@ -422,7 +422,7 @@ class TestSecretVm:
                 _mock_response(no_gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343")
+            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
         assert result.valid is False
         assert result.checks["tls_binding_verified"] is False
@@ -444,7 +444,7 @@ class TestSecretVm:
                 _mock_response(wrong_gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343")
+            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
         assert result.valid is False
         assert result.checks["gpu_binding_verified"] is False
@@ -469,7 +469,7 @@ class TestSecretVm:
                 _mock_response(no_gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343")
+            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
         assert result.valid is False
         assert result.checks["cpu_quote_verified"] is False
@@ -494,7 +494,7 @@ class TestSecretVm:
                 _mock_response(gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343")
+            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
         assert result.valid is False
         assert result.checks["gpu_quote_verified"] is False

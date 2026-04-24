@@ -9,13 +9,17 @@ from secretvm.verify import check_secret_vm
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds]")
+        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--proof-of-cloud] [--show-compose]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
         print(f"  Default output is the per-check PASS/FAIL breakdown. Use --json for")
         print(f"  minimal JSON (no report fields), --raw for full JSON, or --verbose for")
         print(f"  the text breakdown with parsed CPU/GPU/proof-of-cloud quotes.")
         print(f"  --reload-amd-kds bypasses the local AMD KDS cache and re-fetches")
         print(f"  VCEK, CA cert chain, and CRL from kdsintf.amd.com (no effect on TDX).")
+        print(f"  --proof-of-cloud also asks SCRT Labs' quote-parse endpoint to confirm")
+        print(f"  the quote originated on a Secret VM (opt-in; off by default).")
+        print(f"  --show-compose prints the docker-compose.yaml that was verified,")
+        print(f"  after the check list.")
         sys.exit(1)
 
     url = sys.argv[1]
@@ -29,10 +33,17 @@ def main():
     json_out = "--json" in sys.argv
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     reload_amd_kds = "--reload-amd-kds" in sys.argv
+    check_poc = "--proof-of-cloud" in sys.argv
+    show_compose = "--show-compose" in sys.argv
 
     if not (raw or json_out):
         print(f"Verifying {url}\n")
-    result = check_secret_vm(url, product=product, reload_amd_kds=reload_amd_kds)
+    result = check_secret_vm(
+        url,
+        product=product,
+        reload_amd_kds=reload_amd_kds,
+        check_proof_of_cloud=check_poc,
+    )
 
     if raw:
         print(json.dumps(asdict(result), indent=2))
@@ -78,6 +89,10 @@ def main():
         print(f"\nErrors:")
         for err in result.errors:
             print(f"  - {err}")
+
+    if show_compose and isinstance(result.report.get("docker_compose"), str):
+        print("\nDocker compose:")
+        print(result.report["docker_compose"])
 
     # Verdict
     print(f"\n{'✅ All Passed' if result.valid else '🚫 Failed'}")

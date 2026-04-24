@@ -65,6 +65,7 @@ def check_secret_vm(
     url: str,
     product: str = "",
     reload_amd_kds: bool = False,
+    check_proof_of_cloud: bool = False,
 ) -> AttestationResult:
     """Verify a Secret VM by fetching CPU and GPU attestation from its endpoints.
 
@@ -196,6 +197,7 @@ def check_secret_vm(
             "artifacts_ver": workload_result.artifacts_ver,
             "env": workload_result.env,
         }
+        report["docker_compose"] = docker_compose
         if workload_result.status == "authentic_mismatch":
             errors.append("Workload mismatch: VM is authentic but docker-compose does not match")
         elif workload_result.status == "not_authentic":
@@ -204,15 +206,16 @@ def check_secret_vm(
         errors.append(f"Failed to fetch workload: {e}")
         checks["workload_fetched"] = False
 
-    # 7. Proof of cloud: ask SCRT Labs' quote-parse endpoint whether this
-    # quote came from a Secret VM. Non-fatal for overall validity if the
-    # endpoint is unreachable, but the check is surfaced in the output.
-    poc_result = pkg.check_proof_of_cloud(cpu_data)
-    checks["proof_of_cloud_verified"] = poc_result.valid
-    if poc_result.report.get("proof_of_cloud") is not None:
-        report["proof_of_cloud"] = poc_result.report["proof_of_cloud"]
-    if not poc_result.valid:
-        errors.extend(poc_result.errors)
+    # 7. Proof of cloud (opt-in): ask SCRT Labs' quote-parse endpoint whether
+    # this quote came from a Secret VM. Disabled by default — set
+    # check_proof_of_cloud=True (or --proof-of-cloud on the CLI) to include.
+    if check_proof_of_cloud:
+        poc_result = pkg.check_proof_of_cloud(cpu_data)
+        checks["proof_of_cloud_verified"] = poc_result.valid
+        if poc_result.report.get("proof_of_cloud") is not None:
+            report["proof_of_cloud"] = poc_result.report["proof_of_cloud"]
+        if not poc_result.valid:
+            errors.extend(poc_result.errors)
 
     # Overall validity
     required_checks = [
@@ -221,8 +224,9 @@ def check_secret_vm(
         checks.get("cpu_quote_verified"),
         checks.get("tls_binding_verified"),
         checks.get("workload_binding_verified", False),
-        checks.get("proof_of_cloud_verified", False),
     ]
+    if check_proof_of_cloud:
+        required_checks.append(checks.get("proof_of_cloud_verified", False))
     if gpu_present:
         required_checks.append(checks.get("gpu_quote_verified"))
         required_checks.append(checks.get("gpu_binding_verified"))
@@ -239,6 +243,7 @@ async def check_secret_vm_async(
     url: str,
     product: str = "",
     reload_amd_kds: bool = False,
+    check_proof_of_cloud: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`check_secret_vm`.
 
@@ -249,4 +254,6 @@ async def check_secret_vm_async(
     parallelize the four fetches for additional speedup, but the simple
     wrapper is sufficient to use the API from async contexts today.
     """
-    return await asyncio.to_thread(check_secret_vm, url, product, reload_amd_kds)
+    return await asyncio.to_thread(
+        check_secret_vm, url, product, reload_amd_kds, check_proof_of_cloud,
+    )

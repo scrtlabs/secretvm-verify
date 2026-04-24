@@ -13,7 +13,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates two critical bindings:
   - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 fingerprint of the VM's TLS certificate, proving the quote was generated on the machine serving that certificate.
   - **GPU binding**: The second 32 bytes of `report_data` must match the GPU attestation nonce, proving the CPU and GPU attestations are linked.
-- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Included in the default `check_secret_vm` flow and exposed as a standalone `check_proof_of_cloud` / `checkProofOfCloud` function.
+- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Opt-in: pass `check_proof_of_cloud=True` / `checkProofOfCloud=true` to `check_secret_vm` / `check_agent` / `verify_agent` (or use `--proof-of-cloud` on the CLI). Also exposed as a standalone `check_proof_of_cloud` / `checkProofOfCloud` function.
 - **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow (TLS binding, CPU attestation, GPU attestation, and workload verification). Three composable functions:
   - **`resolveAgent`** — Queries the on-chain registry contract for the agent's metadata (tokenURI -> services, supportedTrust).
   - **`verifyAgent`** — Takes agent metadata and runs full TEE verification against the agent's declared endpoints.
@@ -452,6 +452,13 @@ secretvm-verify --check-agent 38114 --chain base -v
 # Verify an agent from a metadata JSON file
 secretvm-verify --agent metadata.json
 
+# Show the actual workload (docker-compose.yaml) after verification
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --show-compose
+
+# Just print the docker-compose from a VM (no verification, pipeable)
+secretvm-verify --compose --vm yellow-krill.vm.scrtlabs.com > compose.yaml
+secretvm-verify --compose docker-compose.yaml   # or from a local file
+
 # JSON output (any command)
 secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --json   # minimal JSON
 secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com --raw    # full JSON with parsed report
@@ -478,6 +485,8 @@ Commands:
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain
   --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
+  --compose <file|--vm url>         Fetch (from a VM or a file) and print the docker-compose
+                                    to stdout. No verification. Useful for piping.
 
 Options:
   --vm <url>           Fetch quote from a VM instead of a file
@@ -488,6 +497,11 @@ Options:
   --verbose, -v        Print parsed CPU/GPU/proof-of-cloud quotes as JSON (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
+  --proof-of-cloud     Also ask SCRT Labs' quote-parse endpoint to confirm the
+                       quote originated on a Secret VM (opt-in; off by default)
+  --show-compose       Print the docker-compose.yaml that was verified after the
+                       check list (works with --secretvm, --verify-workload,
+                       --check-agent, --agent)
 ```
 
 ### Python CLI

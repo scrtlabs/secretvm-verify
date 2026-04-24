@@ -207,6 +207,7 @@ def resolve_agent(agent_id: int, chain: str) -> AgentMetadata:
 def verify_agent(
     metadata: AgentMetadata,
     reload_amd_kds: bool = False,
+    check_proof_of_cloud: bool = False,
 ) -> AttestationResult:
     """Verify an ERC-8004 agent given its metadata.
 
@@ -365,6 +366,7 @@ def verify_agent(
             "artifacts_ver": workload_result.artifacts_ver,
             "env": workload_result.env,
         }
+        report["docker_compose"] = docker_compose
         if workload_result.status == "authentic_mismatch":
             errors.append("Workload mismatch: VM is authentic but docker-compose does not match")
         elif workload_result.status == "not_authentic":
@@ -373,16 +375,17 @@ def verify_agent(
         errors.append(f"Failed to fetch workload: {e}")
         checks["workload_fetched"] = False
 
-    # 8. Proof of cloud: confirm the quote was produced on a Secret VM.
+    # 8. Proof of cloud (opt-in): confirm the quote was produced on a Secret VM.
     # Resolve via sys.modules so tests can patch `secretvm.verify.check_proof_of_cloud`
     # (same pattern as vm.py).
-    import sys as _sys
-    poc_result = _sys.modules["secretvm.verify"].check_proof_of_cloud(cpu_data)
-    checks["proof_of_cloud_verified"] = poc_result.valid
-    if poc_result.report.get("proof_of_cloud") is not None:
-        report["proof_of_cloud"] = poc_result.report["proof_of_cloud"]
-    if not poc_result.valid:
-        errors.extend(poc_result.errors)
+    if check_proof_of_cloud:
+        import sys as _sys
+        poc_result = _sys.modules["secretvm.verify"].check_proof_of_cloud(cpu_data)
+        checks["proof_of_cloud_verified"] = poc_result.valid
+        if poc_result.report.get("proof_of_cloud") is not None:
+            report["proof_of_cloud"] = poc_result.report["proof_of_cloud"]
+        if not poc_result.valid:
+            errors.extend(poc_result.errors)
 
     # Overall validity
     required_checks = [
@@ -392,8 +395,9 @@ def verify_agent(
         checks.get("cpu_quote_verified"),
         checks.get("tls_binding_verified"),
         checks.get("workload_binding_verified", False),
-        checks.get("proof_of_cloud_verified", False),
     ]
+    if check_proof_of_cloud:
+        required_checks.append(checks.get("proof_of_cloud_verified", False))
     if gpu_present:
         required_checks.append(checks.get("gpu_quote_verified"))
         required_checks.append(checks.get("gpu_binding_verified"))
@@ -410,6 +414,7 @@ def check_agent(
     agent_id: int,
     chain: str,
     reload_amd_kds: bool = False,
+    check_proof_of_cloud: bool = False,
 ) -> AttestationResult:
     """End-to-end ERC-8004 agent verification.
 
@@ -434,7 +439,11 @@ def check_agent(
             errors=[f"Failed to resolve agent: {e}"],
         )
 
-    result = verify_agent(metadata, reload_amd_kds=reload_amd_kds)
+    result = verify_agent(
+        metadata,
+        reload_amd_kds=reload_amd_kds,
+        check_proof_of_cloud=check_proof_of_cloud,
+    )
     result.checks = {"agent_resolved": True, **result.checks}
     return result
 
@@ -442,19 +451,23 @@ def check_agent(
 async def verify_agent_async(
     metadata: AgentMetadata,
     reload_amd_kds: bool = False,
+    check_proof_of_cloud: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`verify_agent`.
 
     Use this from inside an event loop. The current implementation offloads
     the synchronous wrapper to a thread pool via :func:`asyncio.to_thread`.
     """
-    return await asyncio.to_thread(verify_agent, metadata, reload_amd_kds)
+    return await asyncio.to_thread(
+        verify_agent, metadata, reload_amd_kds, check_proof_of_cloud,
+    )
 
 
 async def check_agent_async(
     agent_id: int,
     chain: str,
     reload_amd_kds: bool = False,
+    check_proof_of_cloud: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`check_agent`.
 
@@ -462,4 +475,6 @@ async def check_agent_async(
     the synchronous wrapper (on-chain resolution + TEE verification) to a
     thread pool via :func:`asyncio.to_thread`.
     """
-    return await asyncio.to_thread(check_agent, agent_id, chain, reload_amd_kds)
+    return await asyncio.to_thread(
+        check_agent, agent_id, chain, reload_amd_kds, check_proof_of_cloud,
+    )

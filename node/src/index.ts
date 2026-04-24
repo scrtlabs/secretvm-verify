@@ -14,7 +14,7 @@ export {
     verifyWorkload,
     formatWorkloadResult,
 } from "./workload.js";
-export type { WorkloadResult, WorkloadStatus } from "./workload.js";
+export type { WorkloadResult, WorkloadStatus, DockerFilesInput } from "./workload.js";
 export {
     loadTdxRegistry,
     findMatchingArtifacts,

@@ -2,6 +2,20 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.8.1] — 2026-04-24
+
+### Breaking
+
+- **Proof-of-cloud is now opt-in.** `checkSecretVm` / `check_secret_vm`, `verifyAgent` / `verify_agent`, and `checkAgent` / `check_agent` no longer run the SCRT Labs quote-parse check by default. Pass `checkProofOfCloud=true` / `check_proof_of_cloud=True` (or `--proof-of-cloud` on the CLI) to include it. The `proof_of_cloud_verified` check row and `result.report.proof_of_cloud` only appear when opted in.
+
+### Added
+
+- **`--show-compose` flag** — prints the `docker-compose.yaml` that was verified after the check list. Works with `--secretvm`, `--verify-workload`, `--check-agent`, `--agent`.
+- **`--compose <file | --vm url>` standalone verb** — fetches (or reads) a docker-compose and prints it to stdout, with no verification. Useful for piping (`secretvm-verify --compose --vm <host> > compose.yaml`).
+- **`result.report.docker_compose`** — the raw compose string is now attached to the result of `checkSecretVm` / `check_secret_vm` and `verifyAgent` / `verify_agent`, so SDK consumers can inspect the workload that was measured.
+- **`DockerFilesInput`** type is now re-exported from the Node package entry point.
+- Help text now shows `-rv` and `-vw` as explicit shorthand for `--resolve-version` and `--verify-workload`.
+
 ## [0.8.0] — 2026-04-22
 
 ### Added

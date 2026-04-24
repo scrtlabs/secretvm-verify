@@ -1,7 +1,7 @@
 import { AttestationResult, makeResult, orderChecks } from "./types.js";
 import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
-import { checkProofOfCloud } from "./proofOfCloud.js";
+import { checkProofOfCloud as checkProofOfCloud_ } from "./proofOfCloud.js";
 import { verifyWorkload } from "./workload.js";
 import { extractDockerCompose, getTlsCertFingerprint } from "./url.js";
 
@@ -31,6 +31,7 @@ export async function checkSecretVm(
   url: string,
   product = "",
   reloadAmdKds = false,
+  checkProofOfCloud = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -152,6 +153,7 @@ export async function checkSecretVm(
     const workloadResult = await verifyWorkload(cpuData, dockerCompose);
     checks.workload_binding_verified = workloadResult.status === "authentic_match";
     report.workload = workloadResult;
+    report.docker_compose = dockerCompose;
     if (workloadResult.status === "authentic_mismatch") {
       errors.push("Workload mismatch: VM is authentic but docker-compose does not match");
     } else if (workloadResult.status === "not_authentic") {
@@ -162,15 +164,18 @@ export async function checkSecretVm(
     checks.workload_fetched = false;
   }
 
-  // 7. Proof of cloud: SCRT Labs' quote-parse endpoint identifies the VM
-  // as a Secret VM.
-  const pocResult = await checkProofOfCloud(cpuData);
-  checks.proof_of_cloud_verified = pocResult.valid;
-  if (pocResult.report.proof_of_cloud !== undefined) {
-    report.proof_of_cloud = pocResult.report.proof_of_cloud;
-  }
-  if (!pocResult.valid) {
-    errors.push(...pocResult.errors);
+  // 7. Proof of cloud (opt-in): SCRT Labs' quote-parse endpoint identifies
+  // the VM as a Secret VM. Disabled by default — pass checkProofOfCloud=true
+  // (or --proof-of-cloud on the CLI) to include this check.
+  if (checkProofOfCloud) {
+    const pocResult = await checkProofOfCloud_(cpuData);
+    checks.proof_of_cloud_verified = pocResult.valid;
+    if (pocResult.report.proof_of_cloud !== undefined) {
+      report.proof_of_cloud = pocResult.report.proof_of_cloud;
+    }
+    if (!pocResult.valid) {
+      errors.push(...pocResult.errors);
+    }
   }
 
   // Overall validity
@@ -180,8 +185,10 @@ export async function checkSecretVm(
     checks.cpu_quote_verified,
     checks.tls_binding_verified,
     !!checks.workload_binding_verified,
-    !!checks.proof_of_cloud_verified,
   ];
+  if (checkProofOfCloud) {
+    requiredChecks.push(!!checks.proof_of_cloud_verified);
+  }
   if (gpuPresent) {
     requiredChecks.push(!!checks.gpu_quote_verified);
     requiredChecks.push(!!checks.gpu_binding_verified);
