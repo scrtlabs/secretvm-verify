@@ -7,9 +7,25 @@ from dataclasses import asdict
 from secretvm.verify import check_secret_vm
 
 
+def _get_opt(name: str):
+    if name in sys.argv:
+        idx = sys.argv.index(name)
+        if idx + 1 < len(sys.argv):
+            return sys.argv[idx + 1]
+    return None
+
+
 def main():
+    if "--version" in sys.argv or "-V" in sys.argv:
+        from importlib.metadata import PackageNotFoundError, version as _version
+        try:
+            print(f"secretvm-verify {_version('secretvm-verify')}")
+        except PackageNotFoundError:
+            print("secretvm-verify (unknown — not installed via pip)")
+        sys.exit(0)
+
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--proof-of-cloud] [--show-compose]")
+        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--proof-of-cloud] [--show-compose] [--docker-files <tar> | --docker-files-sha256 <hex>] [--version|-V]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
         print(f"  Default output is the per-check PASS/FAIL breakdown. Use --json for")
         print(f"  minimal JSON (no report fields), --raw for full JSON, or --verbose for")
@@ -20,14 +36,14 @@ def main():
         print(f"  the quote originated on a Secret VM (opt-in; off by default).")
         print(f"  --show-compose prints the docker-compose.yaml that was verified,")
         print(f"  after the check list.")
+        print(f"  --docker-files / --docker-files-sha256 supply the Dockerfiles archive")
+        print(f"  (or its SHA-256) baked into the VM — required for VMs that extend the")
+        print(f"  launch measurement with docker-files.")
+        print(f"  --version / -V prints secretvm-verify version and exits.")
         sys.exit(1)
 
     url = sys.argv[1]
-    product = ""
-    if "--product" in sys.argv:
-        idx = sys.argv.index("--product")
-        if idx + 1 < len(sys.argv):
-            product = sys.argv[idx + 1]
+    product = _get_opt("--product") or ""
 
     raw = "--raw" in sys.argv
     json_out = "--json" in sys.argv
@@ -36,6 +52,13 @@ def main():
     check_poc = "--proof-of-cloud" in sys.argv
     show_compose = "--show-compose" in sys.argv
 
+    docker_files_path = _get_opt("--docker-files")
+    docker_files_sha256 = _get_opt("--docker-files-sha256")
+    docker_files_bytes = None
+    if docker_files_path and not docker_files_sha256:
+        with open(docker_files_path, "rb") as f:
+            docker_files_bytes = f.read()
+
     if not (raw or json_out):
         print(f"Verifying {url}\n")
     result = check_secret_vm(
@@ -43,6 +66,8 @@ def main():
         product=product,
         reload_amd_kds=reload_amd_kds,
         check_proof_of_cloud=check_poc,
+        docker_files=docker_files_bytes,
+        docker_files_sha256=docker_files_sha256,
     )
 
     if raw:

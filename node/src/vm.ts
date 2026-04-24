@@ -2,7 +2,7 @@ import { AttestationResult, makeResult, orderChecks } from "./types.js";
 import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
 import { checkProofOfCloud as checkProofOfCloud_ } from "./proofOfCloud.js";
-import { verifyWorkload } from "./workload.js";
+import { verifyWorkload, type DockerFilesInput } from "./workload.js";
 import { extractDockerCompose, getTlsCertFingerprint } from "./url.js";
 
 const SECRET_VM_PORT = 29343;
@@ -32,6 +32,7 @@ export async function checkSecretVm(
   product = "",
   reloadAmdKds = false,
   checkProofOfCloud = false,
+  dockerFilesInput?: DockerFilesInput,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -150,7 +151,7 @@ export async function checkSecretVm(
     const dockerCompose = extractDockerCompose(await resp.text());
     checks.workload_fetched = true;
 
-    const workloadResult = await verifyWorkload(cpuData, dockerCompose);
+    const workloadResult = await verifyWorkload(cpuData, dockerCompose, dockerFilesInput);
     checks.workload_binding_verified = workloadResult.status === "authentic_match";
     report.workload = workloadResult;
     report.docker_compose = dockerCompose;

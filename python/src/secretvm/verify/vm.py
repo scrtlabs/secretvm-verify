@@ -5,6 +5,7 @@ import hashlib
 import json
 import ssl
 import sys
+from typing import Optional
 from urllib.parse import urlparse
 
 import requests
@@ -66,6 +67,8 @@ def check_secret_vm(
     product: str = "",
     reload_amd_kds: bool = False,
     check_proof_of_cloud: bool = False,
+    docker_files: Optional[bytes] = None,
+    docker_files_sha256: Optional[str] = None,
 ) -> AttestationResult:
     """Verify a Secret VM by fetching CPU and GPU attestation from its endpoints.
 
@@ -189,7 +192,9 @@ def check_secret_vm(
         docker_compose = _extract_docker_compose(resp.text)
         checks["workload_fetched"] = True
 
-        workload_result = pkg.verify_workload(cpu_data, docker_compose)
+        workload_result = pkg.verify_workload(
+            cpu_data, docker_compose, docker_files, docker_files_sha256,
+        )
         checks["workload_binding_verified"] = workload_result.status == "authentic_match"
         report["workload"] = {
             "status": workload_result.status,
@@ -244,6 +249,8 @@ async def check_secret_vm_async(
     product: str = "",
     reload_amd_kds: bool = False,
     check_proof_of_cloud: bool = False,
+    docker_files: Optional[bytes] = None,
+    docker_files_sha256: Optional[str] = None,
 ) -> AttestationResult:
     """Async variant of :func:`check_secret_vm`.
 
@@ -256,4 +263,5 @@ async def check_secret_vm_async(
     """
     return await asyncio.to_thread(
         check_secret_vm, url, product, reload_amd_kds, check_proof_of_cloud,
+        docker_files, docker_files_sha256,
     )

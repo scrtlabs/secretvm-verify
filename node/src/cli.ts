@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import {
   checkSecretVm,
   checkCpuAttestation,
@@ -41,6 +43,15 @@ function getFlag(name: string): boolean {
   return args.includes(name);
 }
 
+// `--version` / `-V`: print package version and exit. Handle before any
+// verb parsing so it works even with no other arguments.
+if (args.includes("--version") || args.includes("-V")) {
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  const { name, version } = JSON.parse(readFileSync(pkgPath, "utf8"));
+  console.log(`${name} ${version}`);
+  process.exit(0);
+}
+
 function getFlagValue(name: string): string | undefined {
   const idx = args.indexOf(name);
   if (idx >= 0 && idx + 1 < args.length) return args[idx + 1];
@@ -71,6 +82,14 @@ const reloadAmdKds = getFlag("--reload-amd-kds");
 // `--docker-files-sha256 <hex>` supplies the digest directly (skip the read).
 const dockerFilesPath = getFlagValue("--docker-files");
 const dockerFilesSha256 = getFlagValue("--docker-files-sha256");
+// Resolve docker-files input once. Either read the tar and hash it client-side,
+// or accept a precomputed digest. Passed into --secretvm and --verify-workload.
+const dockerFilesInput: { dockerFiles?: Buffer; dockerFilesSha256?: string } = {};
+if (dockerFilesSha256) {
+  dockerFilesInput.dockerFilesSha256 = dockerFilesSha256;
+} else if (dockerFilesPath) {
+  dockerFilesInput.dockerFiles = readFileSync(dockerFilesPath);
+}
 // Opt-in proof-of-cloud (POSTs the CPU quote to SCRT Labs' quote-parse
 // endpoint). Off by default across all verbs; pass --proof-of-cloud to enable.
 const checkPoc = getFlag("--proof-of-cloud");
@@ -121,7 +140,11 @@ async function getGpuQuote(flagName: string): Promise<string> {
 const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--json|--raw] [--verbose|-v]
 
 Commands:
-  --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
+  --secretvm <url> [--docker-files <tar> | --docker-files-sha256 <hex>]
+                                    Verify a Secret VM (CPU + GPU + TLS binding + workload).
+                                    Optionally pass --docker-files (the archive baked into
+                                    the VM) or --docker-files-sha256 (its hex digest) so the
+                                    workload check includes the docker-files measurement.
   --cpu <file|--vm url>             Verify a CPU quote (auto-detect TDX vs SEV-SNP)
   --tdx <file|--vm url>             Verify an Intel TDX quote
   --sev <file|--vm url>             Verify an AMD SEV-SNP report
@@ -155,9 +178,11 @@ Options:
   --show-compose       Print the docker-compose.yaml that was verified, after the
                        check list. Works with --secretvm, --verify-workload,
                        --check-agent, --agent.
+  --version, -V        Print secretvm-verify version and exit.
 
 Examples:
   secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
+  secretvm-verify --secretvm secretai-jedi.scrtlabs.com --docker-files-sha256 <hex>
   secretvm-verify --tdx cpu_quote.txt
   secretvm-verify --tdx --vm blue-moose.vm.scrtlabs.com
   secretvm-verify --cpu --vm blue-moose.vm.scrtlabs.com
@@ -203,7 +228,7 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc);
+    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput);
   } else if (getFlag("--cpu")) {
     const quoteData = await getCpuQuote("--cpu");
     const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
@@ -289,16 +314,10 @@ try {
       if (!composeFile) { console.log(USAGE); process.exit(1); }
       composeData = readFileSync(composeFile, "utf8");
     }
-    // Optional docker-files input. Either read the archive and compute SHA-256,
-    // or accept a precomputed digest. For TDX the digest becomes RTMR3 log[2];
-    // for SEV it is appended as `docker_additional_files_hash=<hex>` to the
-    // kernel cmdline that feeds the launch measurement.
-    const dockerFilesInput: { dockerFiles?: Buffer; dockerFilesSha256?: string } = {};
-    if (dockerFilesSha256) {
-      dockerFilesInput.dockerFilesSha256 = dockerFilesSha256;
-    } else if (dockerFilesPath) {
-      dockerFilesInput.dockerFiles = readFileSync(dockerFilesPath);
-    }
+    // Uses the shared dockerFilesInput parsed at the top. For TDX the digest
+    // becomes RTMR3 log[2]; for SEV it is appended as
+    // `docker_additional_files_hash=<hex>` to the kernel cmdline that feeds
+    // the launch measurement.
     const quoteType = detectCpuQuoteType(quoteData);
     if (quoteType === "SEV-SNP") {
       // Step 1: cryptographic quote verification
@@ -409,7 +428,7 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc);
+    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput);
   }
 
   // Output

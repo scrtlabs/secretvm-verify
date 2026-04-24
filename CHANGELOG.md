@@ -2,6 +2,13 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.8.2] — 2026-04-24
+
+### Added
+
+- **`--docker-files` / `--docker-files-sha256` now work with `--secretvm`**, not just `--verify-workload`. The flags thread through `checkSecretVm` / `check_secret_vm` (plus async and bare-URL fallback) so a full VM verification against an image baked with Dockerfiles passes end-to-end.
+- **`--version` / `-V` flag** — prints `secretvm-verify <version>` and exits. Available on both the Node CLI and `python check_vm.py`.
+
 ## [0.8.1] — 2026-04-24
 
 ### Breaking
