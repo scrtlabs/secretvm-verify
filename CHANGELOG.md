@@ -2,6 +2,12 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.8.4] — 2026-04-25
+
+### Changed
+
+- CLI help examples now use a generic `my-vm.example.com` placeholder instead of real `*.vm.scrtlabs.com` hostnames.
+
 ## [0.8.3] — 2026-04-24
 
 ### Changed

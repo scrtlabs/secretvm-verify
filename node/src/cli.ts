@@ -179,24 +179,24 @@ Options:
   --version, -V        Print secretvm-verify version and exit.
 
 Examples:
-  secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
-  secretvm-verify --secretvm secretai-jedi.scrtlabs.com --docker-files-sha256 <hex>
+  secretvm-verify --secretvm my-vm.example.com
+  secretvm-verify --secretvm my-vm.example.com --docker-files-sha256 <hex>
   secretvm-verify --tdx cpu_quote.txt
-  secretvm-verify --tdx --vm blue-moose.vm.scrtlabs.com
-  secretvm-verify --cpu --vm blue-moose.vm.scrtlabs.com
+  secretvm-verify --tdx --vm my-vm.example.com
+  secretvm-verify --cpu --vm my-vm.example.com
   secretvm-verify --sev amd_cpu_quote.txt --product Genoa
   secretvm-verify --gpu gpu_attest.txt
   secretvm-verify --cpu cpu_quote.txt --raw
-  secretvm-verify -rv --vm blue-moose.vm.scrtlabs.com
-  secretvm-verify -vw --vm blue-moose.vm.scrtlabs.com
+  secretvm-verify -rv --vm my-vm.example.com
+  secretvm-verify -vw --vm my-vm.example.com
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files docker-files.tar
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files-sha256 <hex>
   secretvm-verify --check-agent 38114 --chain base
   secretvm-verify --check-agent 38114 --chain base -v
   secretvm-verify --agent metadata.json
-  secretvm-verify --secretvm blue-moose.vm.scrtlabs.com --show-compose
-  secretvm-verify --compose --vm blue-moose.vm.scrtlabs.com
+  secretvm-verify --secretvm my-vm.example.com --show-compose
+  secretvm-verify --compose --vm my-vm.example.com
   secretvm-verify --compose docker-compose.yaml`;
 
 function formatError(err: any): string {
