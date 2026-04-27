@@ -4,7 +4,7 @@ Attestation verification SDK for confidential computing environments. Verifies I
 
 ## What it verifies
 
-- **Intel TDX** — Performs full Intel DCAP quote verification, delegating the cryptographic checks to the upstream [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) library. Verifies the PCK certificate chain against a pinned Intel SGX Root CA, the QE Identity, PCK CRL and Root CA CRL revocation, the TCB Info signature, the TCB status, the quote signature, and the QE report binding. Collateral (TCB Info, QE Identity, CRLs, issuer chains) is fetched from a Provisioning Certificate Caching Service (PCCS) — defaults to SCRT Labs' deployment.
+- **Intel TDX** — Performs full Intel DCAP quote verification, delegating the cryptographic checks to the upstream [`@phala/dcap-qvl`](https://www.npmjs.com/package/@phala/dcap-qvl) library (a pure-JS port of Phala Network's Rust [`dcap-qvl`](https://crates.io/crates/dcap-qvl), which the Python package also uses — both packages share verification semantics). Verifies the PCK certificate chain against a pinned Intel SGX Root CA, the TCB Info signature, the QE Identity signature and content (MRSIGNER, ISVPRODID, masked attributes, ISVSVN tier), PCK CRL revocation, the TCB status, the quote signature, the QE report binding, and TD attribute hygiene (debug bit, reserved bits, SEPT_VE_DISABLE). Collateral (TCB Info, QE Identity, CRLs, issuer chains) is fetched from a Provisioning Certificate Caching Service (PCCS) — defaults to SCRT Labs' deployment.
 - **AMD SEV-SNP** — Parses a SEV-SNP attestation report, fetches the VCEK certificate from AMD's Key Distribution Service, verifies the ECDSA-P384 report signature, and validates the certificate chain (VCEK -> ASK -> ARK).
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX or SEV-SNP quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image and verifies the exact compose file that was booted.
@@ -369,7 +369,7 @@ const result = await checkCpuAttestation(quote, "Genoa", /* reloadAmdKds */ true
 const result = await checkAgent(agentId, "base", /* reloadAmdKds */ true);
 ```
 
-The `--reload-amd-kds` flag has no effect on Intel TDX verification (TDX doesn't cache; the upstream `@teekit/qvl` library manages its own ephemeral state).
+The `--reload-amd-kds` flag has no effect on Intel TDX verification (TDX doesn't cache; the upstream `@phala/dcap-qvl` library manages its own ephemeral state).
 
 **To clear the cache entirely:**
 
@@ -380,7 +380,7 @@ rm -rf ~/.cache/secretvm-verify/amd
 ## Requirements
 
 - Node.js >= 18 (uses built-in `crypto`, `fetch`)
-- npm dependencies: [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (TDX quote verification), [`asn1js`](https://www.npmjs.com/package/asn1js) (parses the CRL's `nextUpdate` field for cache TTL), `ethers` (ERC-8004 agent resolution) — installed automatically.
+- npm dependencies: [`@phala/dcap-qvl`](https://www.npmjs.com/package/@phala/dcap-qvl) (TDX quote verification + AMD CRL parsing), [`asn1js`](https://www.npmjs.com/package/asn1js) (parses the CRL's `nextUpdate` field for cache TTL), `ethers` (ERC-8004 agent resolution) — installed automatically.
 
 No system-level dependencies. AMD SEV-SNP certificate chains (RSA-PSS) are verified natively via `node:crypto`.
 

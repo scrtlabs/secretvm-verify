@@ -2,6 +2,22 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.9.0] — 2026-04-27
+
+### Changed
+
+- **Node TDX verification now uses [`@phala/dcap-qvl`](https://www.npmjs.com/package/@phala/dcap-qvl)** in place of `@teekit/qvl`. The new library is a pure-JS port of the Phala Network Rust crate that the Python package already uses, so both packages now share verification semantics. Closes several gaps in the previous Node path (none affect Python — Python was already on the Rust crate):
+  - **TCB Info signature verification** — chain to the pinned Intel SGX Root CA + ECDSA verification of `tcb_info_signature` over canonical TCB JSON. Previously the Node path trusted PCCS over TLS only.
+  - **QE Identity signature + content verification** — MRSIGNER, ISVPRODID, masked ATTRIBUTES / MISCSELECT, ISVSVN tier. (Note: this actually closes a pre-existing gap on **both** paths — the Rust crate populates QE Identity collateral but `verify()` doesn't consume it; the JS port does.)
+  - **PCK CRL revocation check** — leaf serial is consulted against the PCK CRL.
+  - **TD attribute hygiene** — debug bit, reserved bits, SEPT_VE_DISABLE, PKS, KL flags are enforced (`validateTd10` / `validateTd15`).
+- **`@teekit/qvl` removed.** The two AMD CRL helpers (`parseCrlRevokedSerials`, `normalizeSerialHex`) are now provided inline using `@phala/dcap-qvl/utils.CertificateList` for DER parsing.
+- **TCB-status acceptance widened.** Previously the Node path rejected any status other than `UpToDate` / `ConfigurationNeeded`. The new library (matching the Python path) accepts everything except `Revoked` / `Unknown`. The status string is still surfaced in `result.report.tcb_status` so callers can apply stricter policy if needed.
+
+### Caveat
+
+- Neither library currently signature-verifies the PCK / Root CA CRLs (only `nextUpdate` and serial membership). Trust on CRL contents still rests on TLS to PCCS. Tracked upstream.
+
 ## [0.8.4] — 2026-04-25
 
 ### Changed

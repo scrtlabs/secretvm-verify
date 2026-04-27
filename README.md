@@ -6,7 +6,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 
 ## What it verifies
 
-- **Intel TDX** — Performs full Intel DCAP quote verification, delegating the cryptographic checks to the upstream [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) (Python) / [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (Node) library. Verifies the PCK certificate chain against a pinned Intel SGX Root CA, the QE Identity, PCK CRL and Root CA CRL revocation, the TCB Info signature, the TCB status, the quote signature, and the QE report binding. Collateral (TCB Info, QE Identity, CRLs, issuer chains) is fetched from a Provisioning Certificate Caching Service (PCCS) — defaults to SCRT Labs' deployment.
+- **Intel TDX** — Performs full Intel DCAP quote verification, delegating the cryptographic checks to the upstream [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) (Python) / [`@phala/dcap-qvl`](https://www.npmjs.com/package/@phala/dcap-qvl) (Node) library — the latter is a pure-JS port of the same Phala Network crate the Python package uses, so both packages share verification semantics. Verifies the PCK certificate chain against a pinned Intel SGX Root CA, the TCB Info signature, the QE Identity signature and content (MRSIGNER, ISVPRODID, masked attributes, ISVSVN tier), PCK CRL revocation, the TCB status, the quote signature, the QE report binding, and TD attribute hygiene (debug bit, reserved bits, SEPT_VE_DISABLE). Collateral (TCB Info, QE Identity, CRLs, issuer chains) is fetched from a Provisioning Certificate Caching Service (PCCS) — defaults to SCRT Labs' deployment.
 - **AMD SEV-SNP** — Parses a SEV-SNP attestation report, fetches the VCEK certificate from AMD's Key Distribution Service, verifies the ECDSA-P384 report signature, and validates the certificate chain (VCEK → ASK → ARK).
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX or SEV-SNP quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image (`resolveSecretVmVersion` / `verifyTdxWorkload` / `verifySevWorkload`). Looks up the quote in a signed registry of official SecretVM builds, then replays the launch measurement to verify the exact compose file that was booted. For VMs that also bake a Dockerfiles archive into the image, both paths accept an optional docker-files digest via `--docker-files` / `--docker-files-sha256`: TDX extends RTMR3 with it, SEV-SNP appends it to the kernel cmdline as `docker_additional_files_hash=<hex>` (which the launch measurement covers).
@@ -586,7 +586,7 @@ const result = await checkCpuAttestation(quote, "Genoa", true);
 const result = await checkAgent(agentId, "base", true);
 ```
 
-The `--reload-amd-kds` flag has no effect on Intel TDX verification (TDX doesn't cache; the upstream `dcap-qvl` / `@teekit/qvl` libraries manage their own ephemeral state).
+The `--reload-amd-kds` flag has no effect on Intel TDX verification (TDX doesn't cache; the upstream `dcap-qvl` / `@phala/dcap-qvl` libraries manage their own ephemeral state).
 
 **To clear the cache entirely:**
 
@@ -632,7 +632,7 @@ secretvm-verify/
 ## Requirements
 
 - **Python:** >= 3.10. Dependencies: `requests`, `cryptography`, `PyYAML`, `web3`, [`dcap-qvl`](https://pypi.org/project/dcap-qvl/) (TDX quote verification).
-- **Node.js:** >= 18 (uses built-in `crypto`, `fetch`). Dependencies: [`@teekit/qvl`](https://www.npmjs.com/package/@teekit/qvl) (TDX quote verification), [`asn1js`](https://www.npmjs.com/package/asn1js) (parses the CRL's `nextUpdate` field for cache TTL), `ethers` (ERC-8004 agent resolution).
+- **Node.js:** >= 18 (uses built-in `crypto`, `fetch`). Dependencies: [`@phala/dcap-qvl`](https://www.npmjs.com/package/@phala/dcap-qvl) (TDX quote verification + AMD CRL parsing), [`asn1js`](https://www.npmjs.com/package/asn1js) (parses the CRL's `nextUpdate` field for cache TTL), `ethers` (ERC-8004 agent resolution).
 
 No system-level dependencies. AMD SEV-SNP certificate chains (RSA-PSS) are verified natively via `cryptography` (Python) and `node:crypto` (Node).
 

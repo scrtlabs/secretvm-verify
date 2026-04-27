@@ -2,152 +2,40 @@
  * Intel TDX attestation verification.
  *
  * Cryptographic verification (PCK chain, QE Identity, CRLs, TCB Info, quote
- * signature) is delegated to the upstream `@teekit/qvl` library, which
- * implements the full Intel DCAP quote verification flow against a pinned
- * Intel SGX Root CA. This module's job is to assemble the collateral
- * (CRLs + TCB lookup callback) from PCCS, parse the quote so we can populate
- * report fields, and hand off to teekit/qvl for the actual crypto.
+ * signature) is delegated to `@phala/dcap-qvl`, which implements the full
+ * Intel DCAP quote verification flow against a pinned Intel SGX Root CA.
+ * Mirrors the Python path (Phala's Rust `dcap-qvl` via PyO3 bindings) so
+ * both packages share the same verification semantics.
+ *
+ * This module fetches collateral from PCCS, parses the quote to populate
+ * report fields, and hands off to dcap-qvl for the actual crypto.
  */
 
-import { verifyTdx, getTcbStatus, isTcbInfoFresh } from "@teekit/qvl";
+import { verify, getCollateral } from "@phala/dcap-qvl";
 import { AttestationResult, makeResult } from "./types.js";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 
 const PCCS_HOST = "https://pccs.scrtlabs.com";
 
-// ---------------------------------------------------------------------------
-// Collateral fetching helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Decode hex-ASCII to raw bytes if `b` looks like hex-encoded ASN.1 DER.
- *
- * The SCRT PCCS deployment returns CRLs as hex-encoded ASCII (e.g.
- * b'30820122...') instead of raw DER. teekit/qvl reads the body as raw bytes
- * and chokes on the unexpected encoding. This helper detects hex-ASCII and
- * decodes it. Other PCCS deployments return raw DER, in which case the
- * decode either fails or doesn't begin with an ASN.1 SEQUENCE tag, and we
- * pass the bytes through unchanged.
- */
-function maybeDehex(b: Uint8Array): Uint8Array {
-  if (b.length % 2 !== 0) return b;
-  try {
-    const text = Buffer.from(b).toString("ascii");
-    if (!/^[0-9a-fA-F]+$/.test(text)) return b;
-    const decoded = Buffer.from(text, "hex");
-    if (decoded.length > 0 && decoded[0] === 0x30) return decoded;
-  } catch {
-    /* fall through */
-  }
-  return b;
-}
-
-/** Fetch the three CRLs needed for full PCK chain revocation checks. */
-async function fetchCrls(host: string): Promise<Uint8Array[]> {
-  const urls = [
-    `${host}/sgx/certification/v4/pckcrl?ca=processor`,
-    `${host}/sgx/certification/v4/pckcrl?ca=platform`,
-    `${host}/sgx/certification/v4/rootcacrl`,
-  ];
-  const results = await Promise.all(
-    urls.map(async (url) => {
-      const resp = await fetch(url);
-      if (!resp.ok) {
-        throw new Error(`PCCS ${url} returned ${resp.status}`);
-      }
-      const buf = new Uint8Array(await resp.arrayBuffer());
-      return maybeDehex(buf);
-    }),
-  );
-  return results;
-}
-
-/** Captured TCB info — populated by the verifyTcb callback during verification. */
 interface TcbCapture {
   status: string;
   advisoryIds: string[];
-  fresh: boolean;
 }
 
 /**
- * Build a verifyTcb callback that hits the supplied PCCS host, derives the
- * TCB status using teekit's helper, and captures the result for inclusion in
- * the AttestationResult report.
+ * Run full DCAP-grade quote verification via `@phala/dcap-qvl`. Fetches
+ * collateral (PCK CRL, root CA CRL, TCB Info + signature + issuer chain,
+ * QE Identity + signature + issuer chain) from PCCS and runs `verify`,
+ * which throws on any cryptographic or freshness failure. Returns the
+ * captured TCB status + advisory IDs on success.
  */
-function makeVerifyTcbCallback(host: string, capture: TcbCapture) {
-  return async ({
-    fmspc,
-    cpuSvn,
-    pceSvn,
-    quote,
-  }: {
-    fmspc: string;
-    cpuSvn: number[];
-    pceSvn: number;
-    quote: any;
-  }): Promise<boolean> => {
-    const isTdx = quote?.header?.tee_type === 0x81;
-    const path = isTdx ? "tdx" : "sgx";
-    const url = `${host}/${path}/certification/v4/tcb?fmspc=${fmspc}`;
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      throw new Error(`PCCS ${url} returned ${resp.status}`);
-    }
-    const tcbInfo = (await resp.json()) as any;
-    const status = getTcbStatus(tcbInfo, cpuSvn, pceSvn, isTdx);
-    const fresh = isTcbInfoFresh(tcbInfo, Date.now());
-    capture.status = status;
-    capture.fresh = fresh;
-    // Walk the levels to find the matching one and pull its advisoryIDs
-    for (const level of tcbInfo.tcbInfo?.tcbLevels ?? []) {
-      const components: { svn: number }[] = isTdx
-        ? level.tcb?.tdxtcbcomponents ?? []
-        : level.tcb?.sgxtcbcomponents ?? [];
-      let match = true;
-      for (let i = 0; i < components.length; i++) {
-        if (i < cpuSvn.length && cpuSvn[i]! < (components[i]?.svn ?? 0)) {
-          match = false;
-          break;
-        }
-      }
-      if (match && (level.tcb?.pcesvn === undefined || pceSvn >= level.tcb.pcesvn)) {
-        capture.advisoryIds = level.advisoryIDs ?? [];
-        break;
-      }
-    }
-    return (
-      fresh && (status === "UpToDate" || status === "ConfigurationNeeded")
-    );
+async function qvlVerifyTdx(rawQuote: Buffer): Promise<TcbCapture> {
+  const collateral = await getCollateral(PCCS_HOST, rawQuote);
+  const result = verify(rawQuote, collateral, Math.floor(Date.now() / 1000));
+  return {
+    status: result.status,
+    advisoryIds: [...(result.advisory_ids ?? [])],
   };
-}
-
-/**
- * Run full DCAP-grade quote verification via @teekit/qvl. Throws on any
- * cryptographic failure with a descriptive error message; returns the
- * captured TCB status / advisory IDs on success.
- */
-async function qvlVerifyTdx(
-  rawQuote: Uint8Array,
-): Promise<TcbCapture> {
-  const crls = await fetchCrls(PCCS_HOST);
-  const capture: TcbCapture = {
-    status: "Unknown",
-    advisoryIds: [],
-    fresh: false,
-  };
-  const config = {
-    crls,
-    verifyTcb: makeVerifyTcbCallback(PCCS_HOST, capture),
-    verifyMeasurements: () => true, // accept any measurements — caller checks separately
-  };
-  const ok = await verifyTdx(rawQuote, config);
-  if (!ok) {
-    // verifyTdx returns false (rather than throws) only when verifyTcb rejects
-    throw new Error(
-      `TCB rejected: status=${capture.status}, fresh=${capture.fresh}`,
-    );
-  }
-  return capture;
 }
 
 // ---------------------------------------------------------------------------
@@ -212,11 +100,11 @@ export async function checkTdxCpuAttestation(
     if (m) fmspc = extractFmspc(m[0]);
   }
 
-  // Full DCAP verification via @teekit/qvl
+  // Full DCAP verification via @phala/dcap-qvl
   let tcbStatus = "Unknown";
   let advisoryIds: string[] = [];
   try {
-    const capture = await qvlVerifyTdx(new Uint8Array(raw));
+    const capture = await qvlVerifyTdx(raw);
     checks.quote_verified = true;
     tcbStatus = capture.status;
     advisoryIds = capture.advisoryIds;

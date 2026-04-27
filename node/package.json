@@ -1,6 +1,6 @@
 {
   "name": "secretvm-verify",
-  "version": "0.8.4",
+  "version": "0.9.0",
   "description": "Attestation verification for Intel TDX, AMD SEV-SNP, and NVIDIA GPU",
   "type": "module",
   "main": "dist/index.js",
@@ -40,7 +40,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "@teekit/qvl": "^0.0.4",
+    "@phala/dcap-qvl": "0.3.9",
     "asn1js": "^3.0.5",
     "ethers": "^6.16.0"
   },

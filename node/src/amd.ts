@@ -1,9 +1,15 @@
 import crypto from "node:crypto";
 import { fromBER, Integer, Sequence, UTCTime } from "asn1js";
-import { parseCrlRevokedSerials, normalizeSerialHex } from "@teekit/qvl/utils";
+import { utils as qvlUtils } from "@phala/dcap-qvl";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 import { AttestationResult, makeResult } from "./types.js";
 import * as kdsCache from "./kdsCache.js";
+
+/** Canonical hex form of an X.509 serial: uppercase, no leading zeros. */
+function normalizeSerialHex(input: string): string {
+  const hex = input.replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+  return hex.replace(/^0+(?=[0-9A-F])/g, "");
+}
 
 const AMD_KDS_BASE = "https://kdsintf.amd.com";
 
@@ -310,8 +316,13 @@ async function fetchCrl(product: string, reloadAmdKds = false): Promise<Buffer> 
 function checkVcekRevocation(vcekDer: Buffer, crlDer: Buffer): boolean {
   const cert = new crypto.X509Certificate(vcekDer);
   const vcekSerial = normalizeSerialHex(cert.serialNumber);
-  const revoked = new Set(parseCrlRevokedSerials(crlDer));
-  return !revoked.has(vcekSerial);
+  const crl = qvlUtils.CertificateList.decode(crlDer, "der");
+  const revokedList = crl?.tbsCertList?.revokedCertificates ?? [];
+  for (const entry of revokedList) {
+    const serial = normalizeSerialHex(entry.userCertificate.toString(16));
+    if (serial === vcekSerial) return false;
+  }
+  return true;
 }
 
 function splitPem(pem: string): string[] {
