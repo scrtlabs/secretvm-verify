@@ -15,7 +15,10 @@ import { verify, getCollateral } from "@phala/dcap-qvl";
 import { AttestationResult, makeResult } from "./types.js";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 
-const PCCS_HOST = "https://pccs.scrtlabs.com";
+// Override via the SECRETVM_PCCS_URL env var (e.g. self-hosted PCCS, or
+// https://api.trustedservices.intel.com for Intel's PCS directly).
+const PCCS_HOST =
+  process.env.SECRETVM_PCCS_URL?.trim() || "https://pccs.scrtlabs.com";
 
 interface TcbCapture {
   status: string;

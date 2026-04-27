@@ -8,6 +8,7 @@ fmspc, etc.), then hand off to dcap-qvl for the actual verification.
 """
 
 import asyncio
+import os
 import struct
 import time
 from typing import Optional
@@ -17,7 +18,9 @@ from cryptography.x509 import load_pem_x509_certificate
 
 from .types import AttestationResult
 
-_PCCS_HOST = "https://pccs.scrtlabs.com"
+# Override via the SECRETVM_PCCS_URL env var (e.g. self-hosted PCCS, or
+# https://api.trustedservices.intel.com for Intel's PCS directly).
+_PCCS_HOST = (os.environ.get("SECRETVM_PCCS_URL") or "https://pccs.scrtlabs.com").strip() or "https://pccs.scrtlabs.com"
 
 
 def _tdx_parse_quote(raw: bytes) -> dict:

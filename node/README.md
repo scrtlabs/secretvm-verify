@@ -313,7 +313,7 @@ The library contacts these services during verification:
 
 | Service | Used by | Purpose |
 |---------|---------|---------|
-| [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains) |
+| [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains). Override with `SECRETVM_PCCS_URL` (e.g. `https://api.trustedservices.intel.com` for Intel's PCS, or your own deployment). |
 | [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate, AMD CA cert chain (ASK + ARK), CRL |
 | [NVIDIA NRAS](https://nras.attestation.nvidia.com) | GPU | GPU attestation verification |
 
