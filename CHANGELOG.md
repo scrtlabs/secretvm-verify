@@ -8,6 +8,10 @@ All notable changes to `secretvm-verify` (both the Node and Python packages) are
 
 - **`SECRETVM_PCCS_URL` environment variable** — overrides the PCCS server used to fetch Intel TDX collateral (TCB Info, QE Identity, CRLs). Defaults to `https://pccs.scrtlabs.com`. Useful for self-hosted PCCS deployments or to point directly at Intel's PCS (`https://api.trustedservices.intel.com`). Honoured by both the Node and Python packages.
 
+### Security
+
+- **AMD ARK is now pinned** per product (Milan, Genoa, Turin) by SHA-256 of its SubjectPublicKeyInfo. Previously the AMD cert chain check (VCEK → ASK → ARK) verified the ARK was self-signed but didn't tie it to AMD — a DNS-spoof or compromised AMD KDS could substitute a self-signed impostor ARK and the chain would still pass. The fix anchors the chain in code, so trust no longer depends on TLS to `kdsintf.amd.com`. Applies to both the Node and Python packages.
+
 ### Changed
 
 - **Node TDX verification now uses [`@phala/dcap-qvl`](https://www.npmjs.com/package/@phala/dcap-qvl)** in place of `@teekit/qvl`. The new library is a pure-JS port of the Phala Network Rust crate that the Python package already uses, so both packages now share verification semantics. Closes several gaps in the previous Node path (none affect Python — Python was already on the Rust crate):

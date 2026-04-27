@@ -335,8 +335,43 @@ function splitPem(pem: string): string[] {
   return blocks;
 }
 
-/** Verify VCEK → ASK → ARK certificate chain using Node's crypto module. */
-function verifyCertChain(vcekDer: Buffer, chainPem: string): boolean {
+/**
+ * Pinned SHA-256 fingerprints of the AMD ARK public keys (SPKI), per product.
+ *
+ * AMD publishes the ARK at `https://kdsintf.amd.com/vcek/v1/{product}/cert_chain`,
+ * but the chain endpoint is reachable over the public internet — without
+ * pinning, a DNS-spoof or compromised KDS could substitute a self-signed
+ * impostor ARK and the chain check would still pass. These fingerprints are
+ * the cryptographic anchor that ties the chain to AMD.
+ *
+ * The pin is over the SubjectPublicKeyInfo (not the cert envelope) so it
+ * survives certificate reissuance with the same key. ARKs ship with 25-year
+ * validity (e.g. ARK-Milan: 2020 → 2045).
+ *
+ * Recompute by running:
+ *   curl -sf https://kdsintf.amd.com/vcek/v1/{product}/cert_chain |
+ *     awk '/-----BEGIN CERTIFICATE-----/{n++} n==2{print}' |
+ *     openssl x509 -pubkey -noout |
+ *     openssl pkey -pubin -outform DER 2>/dev/null |
+ *     openssl dgst -sha256
+ */
+const PINNED_ARK_SPKI_SHA256: Record<string, string> = {
+  Milan: "9f056bee44377e29308cb5ffa895bdfb62d18881fa6bed8d6f075b0204089cb9",
+  Genoa: "429a69c9422aa258ee4d8db5fcda9c6470ef15f8cd5a9cebd6cbc7d90b863831",
+  Turin: "4f125410563a2ab9a50356f9243f6fe0b6f73de98603f53f90339c70e9d7ad08",
+};
+
+function spkiSha256Hex(cert: crypto.X509Certificate): string {
+  const spkiDer = cert.publicKey.export({ format: "der", type: "spki" });
+  return crypto.createHash("sha256").update(spkiDer).digest("hex");
+}
+
+/** Verify VCEK → ASK → ARK certificate chain and pin the ARK to AMD. */
+function verifyCertChain(
+  vcekDer: Buffer,
+  chainPem: string,
+  product: string,
+): boolean {
   const blocks = splitPem(chainPem);
   if (blocks.length < 2) {
     return false;
@@ -354,6 +389,12 @@ function verifyCertChain(vcekDer: Buffer, chainPem: string): boolean {
       return false;
     }
   }
+
+  // Pin the ARK to the known AMD root for this product. Without this,
+  // a self-signed impostor chain would pass the cryptographic checks below.
+  const expectedArkSpki = PINNED_ARK_SPKI_SHA256[product];
+  if (!expectedArkSpki) return false;
+  if (spkiSha256Hex(ark) !== expectedArkSpki) return false;
 
   try {
     // X509Certificate.verify() handles RSA-PSS and ECDSA automatically
@@ -446,7 +487,7 @@ export async function checkSevCpuAttestation(
   // Verify cert chain (VCEK -> ASK -> ARK)
   try {
     const chainPem = await fetchChainPem(detectedProduct, reloadAmdKds);
-    checks.cert_chain_valid = verifyCertChain(vcekDer, chainPem);
+    checks.cert_chain_valid = verifyCertChain(vcekDer, chainPem, detectedProduct);
     if (!checks.cert_chain_valid) {
       errors.push(
         "Certificate chain verification failed (VCEK → ASK → ARK)",

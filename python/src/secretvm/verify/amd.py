@@ -3,11 +3,12 @@
 import asyncio
 import base64
 import datetime
+import hashlib
 import struct
 
 import requests
 from cryptography.hazmat.primitives.asymmetric import ec, utils
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509 import (
     load_der_x509_certificate,
     load_pem_x509_certificate,
@@ -271,8 +272,41 @@ def _amd_verify_one_cert(child, parent) -> bool:
         return False
 
 
-def _amd_verify_cert_chain(vcek_der: bytes, chain_pem: bytes) -> bool:
-    """Verify VCEK -> ASK -> ARK certificate chain using native crypto."""
+# Pinned SHA-256 fingerprints of the AMD ARK public keys (SPKI), per product.
+#
+# AMD publishes the ARK at https://kdsintf.amd.com/vcek/v1/{product}/cert_chain,
+# but the chain endpoint is reachable over the public internet — without
+# pinning, a DNS-spoof or compromised KDS could substitute a self-signed
+# impostor ARK and the chain check would still pass. These fingerprints are
+# the cryptographic anchor that ties the chain to AMD.
+#
+# The pin is over the SubjectPublicKeyInfo (not the cert envelope) so it
+# survives certificate reissuance with the same key. ARKs ship with 25-year
+# validity (e.g. ARK-Milan: 2020 → 2045).
+#
+# Recompute by running:
+#   curl -sf https://kdsintf.amd.com/vcek/v1/{product}/cert_chain |
+#     awk '/-----BEGIN CERTIFICATE-----/{n++} n==2{print}' |
+#     openssl x509 -pubkey -noout |
+#     openssl pkey -pubin -outform DER 2>/dev/null |
+#     openssl dgst -sha256
+_PINNED_ARK_SPKI_SHA256 = {
+    "Milan": "9f056bee44377e29308cb5ffa895bdfb62d18881fa6bed8d6f075b0204089cb9",
+    "Genoa": "429a69c9422aa258ee4d8db5fcda9c6470ef15f8cd5a9cebd6cbc7d90b863831",
+    "Turin": "4f125410563a2ab9a50356f9243f6fe0b6f73de98603f53f90339c70e9d7ad08",
+}
+
+
+def _amd_spki_sha256_hex(cert) -> str:
+    spki_der = cert.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    return hashlib.sha256(spki_der).hexdigest()
+
+
+def _amd_verify_cert_chain(vcek_der: bytes, chain_pem: bytes, product: str) -> bool:
+    """Verify VCEK -> ASK -> ARK certificate chain and pin the ARK to AMD."""
     pem_blocks = _amd_split_pem(chain_pem)
     if len(pem_blocks) < 2:
         return False
@@ -285,6 +319,14 @@ def _amd_verify_cert_chain(vcek_der: bytes, chain_pem: bytes) -> bool:
     for cert in [vcek, ask, ark]:
         if now < cert.not_valid_before_utc or now > cert.not_valid_after_utc:
             return False
+
+    # Pin the ARK to the known AMD root for this product. Without this,
+    # a self-signed impostor chain would pass the cryptographic checks below.
+    expected_ark_spki = _PINNED_ARK_SPKI_SHA256.get(product)
+    if not expected_ark_spki:
+        return False
+    if _amd_spki_sha256_hex(ark) != expected_ark_spki:
+        return False
 
     # ARK is self-signed, ASK signed by ARK, VCEK signed by ASK
     return (
@@ -363,7 +405,7 @@ def check_sev_cpu_attestation(
     # Verify cert chain (VCEK -> ASK -> ARK)
     try:
         chain_pem = _amd_fetch_chain_pem(detected_product, reload_amd_kds=reload_amd_kds)
-        checks["cert_chain_valid"] = _amd_verify_cert_chain(vcek_der, chain_pem)
+        checks["cert_chain_valid"] = _amd_verify_cert_chain(vcek_der, chain_pem, detected_product)
         if not checks["cert_chain_valid"]:
             errors.append("Certificate chain verification failed (VCEK -> ASK -> ARK)")
     except Exception as e:
