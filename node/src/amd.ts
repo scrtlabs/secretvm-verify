@@ -420,6 +420,73 @@ function parseDerLength(buf: Buffer, offset: number): { length: number; offset: 
   return { length: actualLen, offset };
 }
 
+// AMD VCEK custom OIDs (1.3.6.1.4.1.3704.1.*), DER-encoded as they appear in
+// the cert (`06 LL <oid bytes>`). These name the cert's chip and TCB binding.
+const AMD_OID_HWID = Buffer.from("06092B060104019C780104", "hex");
+const AMD_OID_BL = Buffer.from("060A2B060104019C78010301", "hex");
+const AMD_OID_TEE = Buffer.from("060A2B060104019C78010302", "hex");
+const AMD_OID_SNP = Buffer.from("060A2B060104019C78010303", "hex");
+const AMD_OID_UC = Buffer.from("060A2B060104019C78010308", "hex");
+
+/** Find an AMD extension by OID and return the OCTET STRING contents. */
+function findAmdExt(certDer: Buffer, oidBytes: Buffer): Buffer | null {
+  const idx = certDer.indexOf(oidBytes);
+  if (idx < 0) return null;
+  const cur = idx + oidBytes.length;
+  if (certDer[cur] !== 0x04) return null; // must be OCTET STRING
+  const len = parseDerLength(certDer, cur + 1);
+  return certDer.subarray(len.offset, len.offset + len.length);
+}
+
+/** Read the inner ASN.1 INTEGER inside an AMD TCB extension's OCTET STRING. */
+function readAmdTcbInt(octetContents: Buffer): number | null {
+  if (octetContents.length < 3 || octetContents[0] !== 0x02) return null;
+  const len = parseDerLength(octetContents, 1);
+  const intBytes = octetContents.subarray(len.offset, len.offset + len.length);
+  if (intBytes.length === 1) return intBytes[0]!;
+  // ASN.1 INTEGER for values >= 128 is encoded as 00 XX (leading zero for
+  // unsigned representation).
+  if (intBytes.length === 2 && intBytes[0] === 0x00) return intBytes[1]!;
+  return null;
+}
+
+/**
+ * Confirm the VCEK certificate's HWID + TCB extensions match the report.
+ *
+ * Defence-in-depth: today we trust AMD KDS to return the cert matching the
+ * URL parameters we supplied (which were derived from the report). With this
+ * check, we trust AMD's own cryptographic binding directly — the cert
+ * extensions say "this VCEK is for chip X at TCB Y", and we verify that
+ * matches the chip_id + reported_tcb in the attested report.
+ */
+function vcekMatchesReport(
+  vcekDer: Buffer,
+  rpt: ReturnType<typeof parseReport>,
+): boolean {
+  const hwid = findAmdExt(vcekDer, AMD_OID_HWID);
+  if (!hwid || hwid.length !== 64) return false;
+  if (Buffer.compare(hwid, rpt.chipId) !== 0) return false;
+
+  const blOctets = findAmdExt(vcekDer, AMD_OID_BL);
+  const teeOctets = findAmdExt(vcekDer, AMD_OID_TEE);
+  const snpOctets = findAmdExt(vcekDer, AMD_OID_SNP);
+  const ucOctets = findAmdExt(vcekDer, AMD_OID_UC);
+  if (!blOctets || !teeOctets || !snpOctets || !ucOctets) return false;
+
+  const bl = readAmdTcbInt(blOctets);
+  const tee = readAmdTcbInt(teeOctets);
+  const snp = readAmdTcbInt(snpOctets);
+  const uc = readAmdTcbInt(ucOctets);
+  if (bl === null || tee === null || snp === null || uc === null) return false;
+
+  return (
+    bl === rpt.reportedTcb.bootLoader &&
+    tee === rpt.reportedTcb.tee &&
+    snp === rpt.reportedTcb.snp &&
+    uc === rpt.reportedTcb.microcode
+  );
+}
+
 /** Return true if the VCEK is NOT in the CRL (i.e. not revoked). */
 function checkVcekRevocation(vcekDer: Buffer, crlDer: Buffer): boolean {
   const cert = new crypto.X509Certificate(vcekDer);
@@ -593,6 +660,13 @@ export async function checkSevCpuAttestation(
     return makeResult("SEV-SNP", { checks, errors });
   }
 
+  // VCEK extensions must match the report's chip_id and reported_tcb.
+  // Defence-in-depth against KDS misbehavior or URL-construction bugs.
+  checks.vcek_matches_report = vcekMatchesReport(vcekDer, rpt);
+  if (!checks.vcek_matches_report) {
+    errors.push("VCEK extensions do not match report (chip_id or TCB mismatch)");
+  }
+
   // Verify cert chain (VCEK -> ASK -> ARK)
   let chainPem: string | undefined;
   try {
@@ -658,6 +732,7 @@ export async function checkSevCpuAttestation(
   const valid =
     !!checks.report_parsed &&
     !!checks.vcek_fetched &&
+    !!checks.vcek_matches_report &&
     !!checks.cert_chain_valid &&
     !!checks.crl_signature_valid &&
     !!checks.crl_check_passed &&

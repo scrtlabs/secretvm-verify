@@ -33,6 +33,7 @@ const CHECK_ORDER: string[] = [
   // SEV-specific detail keys (present on direct checkSevCpuAttestation results)
   "report_parsed",
   "vcek_fetched",
+  "vcek_matches_report",
   "cert_chain_valid",
   "crl_signature_valid",
   "crl_check_passed",

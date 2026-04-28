@@ -11,6 +11,7 @@ import requests
 from cryptography.hazmat.primitives.asymmetric import ec, utils
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.x509 import (
+    ObjectIdentifier,
     load_der_x509_certificate,
     load_pem_x509_certificate,
     load_der_x509_crl,
@@ -328,6 +329,66 @@ def _amd_spki_sha256_hex(cert) -> str:
     return hashlib.sha256(spki_der).hexdigest()
 
 
+# AMD VCEK custom OIDs (1.3.6.1.4.1.3704.1.*) that name the cert's chip and
+# TCB binding. Verifying these against the report defends against KDS
+# misbehaviour or URL-construction bugs that could yield a real-but-wrong VCEK.
+_AMD_OID_HWID = ObjectIdentifier("1.3.6.1.4.1.3704.1.4")
+_AMD_OID_BL = ObjectIdentifier("1.3.6.1.4.1.3704.1.3.1")
+_AMD_OID_TEE = ObjectIdentifier("1.3.6.1.4.1.3704.1.3.2")
+_AMD_OID_SNP = ObjectIdentifier("1.3.6.1.4.1.3704.1.3.3")
+_AMD_OID_UC = ObjectIdentifier("1.3.6.1.4.1.3704.1.3.8")
+
+
+def _amd_get_ext_value(cert, oid: ObjectIdentifier) -> bytes:
+    """Return the OCTET STRING contents of a custom AMD extension."""
+    ext = cert.extensions.get_extension_for_oid(oid)
+    # cryptography returns UnrecognizedExtension for non-standard OIDs;
+    # .value is the raw OCTET STRING contents.
+    return ext.value.value
+
+
+def _amd_read_tcb_int(octet_contents: bytes) -> int:
+    """Read the inner ASN.1 INTEGER inside an AMD TCB extension's OCTET STRING."""
+    if len(octet_contents) < 3 or octet_contents[0] != 0x02:
+        raise ValueError("Expected ASN.1 INTEGER inside AMD TCB extension")
+    length = octet_contents[1]
+    int_bytes = octet_contents[2:2 + length]
+    if len(int_bytes) == 1:
+        return int_bytes[0]
+    # ASN.1 INTEGER for values >= 128 has a leading 0x00 sign byte.
+    if len(int_bytes) == 2 and int_bytes[0] == 0x00:
+        return int_bytes[1]
+    raise ValueError(f"Unexpected INTEGER length {len(int_bytes)}")
+
+
+def _amd_vcek_matches_report(vcek_cert, report: dict) -> bool:
+    """Confirm the VCEK certificate's HWID + TCB extensions match the report.
+
+    Defence-in-depth: today we trust AMD KDS to return the cert matching the
+    URL parameters we supplied (which were derived from the report). With
+    this check, we trust AMD's own cryptographic binding directly — the
+    cert extensions say "this VCEK is for chip X at TCB Y", and we verify
+    that matches the chip_id + reported_tcb in the attested report.
+    """
+    try:
+        hwid = _amd_get_ext_value(vcek_cert, _AMD_OID_HWID)
+        if hwid != report["chip_id"]:
+            return False
+        bl = _amd_read_tcb_int(_amd_get_ext_value(vcek_cert, _AMD_OID_BL))
+        tee = _amd_read_tcb_int(_amd_get_ext_value(vcek_cert, _AMD_OID_TEE))
+        snp = _amd_read_tcb_int(_amd_get_ext_value(vcek_cert, _AMD_OID_SNP))
+        uc = _amd_read_tcb_int(_amd_get_ext_value(vcek_cert, _AMD_OID_UC))
+        rt = report["reported_tcb"]
+        return (
+            bl == rt["boot_loader"]
+            and tee == rt["tee"]
+            and snp == rt["snp"]
+            and uc == rt["microcode"]
+        )
+    except Exception:
+        return False
+
+
 def _amd_verify_crl_signature(crl_der: bytes, chain_pem: bytes) -> bool:
     """Verify the AMD VCEK CRL signature against the ARK public key.
 
@@ -456,6 +517,12 @@ def check_sev_cpu_attestation(
             checks=checks, errors=errors,
         )
 
+    # VCEK extensions must match the report's chip_id and reported_tcb.
+    # Defence-in-depth against KDS misbehaviour or URL-construction bugs.
+    checks["vcek_matches_report"] = _amd_vcek_matches_report(vcek, rpt)
+    if not checks["vcek_matches_report"]:
+        errors.append("VCEK extensions do not match report (chip_id or TCB mismatch)")
+
     # Verify cert chain (VCEK -> ASK -> ARK)
     chain_pem: Optional[bytes] = None
     try:
@@ -512,6 +579,7 @@ def check_sev_cpu_attestation(
     valid = all([
         checks.get("report_parsed"),
         checks.get("vcek_fetched"),
+        checks.get("vcek_matches_report"),
         checks.get("cert_chain_valid"),
         checks.get("crl_signature_valid"),
         checks.get("crl_check_passed"),

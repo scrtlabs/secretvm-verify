@@ -25,6 +25,7 @@ _CHECK_ORDER = (
     # SEV-specific detail keys
     "report_parsed",
     "vcek_fetched",
+    "vcek_matches_report",
     "cert_chain_valid",
     "crl_signature_valid",
     "crl_check_passed",
