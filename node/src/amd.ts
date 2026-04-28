@@ -84,6 +84,19 @@ function parseTcb(buf: Buffer): TcbVersion {
   };
 }
 
+function tcbGte(a: TcbVersion, b: TcbVersion): boolean {
+  return (
+    a.bootLoader >= b.bootLoader &&
+    a.tee >= b.tee &&
+    a.snp >= b.snp &&
+    a.microcode >= b.microcode
+  );
+}
+
+function isTcbOrdered(current: TcbVersion, committed: TcbVersion, launch: TcbVersion): boolean {
+  return tcbGte(current, committed) && tcbGte(committed, launch);
+}
+
 /** Convert raw little-endian R, S buffers to DER-encoded ECDSA signature. */
 function ecdsaLeRsToDer(rLE: Buffer, sLE: Buffer): Buffer {
   // Reverse to big-endian
@@ -545,12 +558,30 @@ export async function checkSevCpuAttestation(
     errors.push("Report signature verification failed");
   }
 
+  // Policy: SecretVM must not be running in debug mode (would expose secrets).
+  checks.debug_disabled = !rpt.debugAllowed;
+  if (!checks.debug_disabled) {
+    errors.push("Report has debug_allowed=true (debug-mode VM is not trusted)");
+  }
+
+  // TCB monotonicity per the SEV-SNP firmware ABI: current_tcb >= committed_tcb
+  // >= launch_tcb componentwise. An inversion indicates a firmware downgrade
+  // or a malformed report.
+  checks.tcb_ordering_valid = isTcbOrdered(rpt.currentTcb, rpt.committedTcb, rpt.launchTcb);
+  if (!checks.tcb_ordering_valid) {
+    errors.push(
+      "TCB ordering invalid (expected current >= committed >= launch componentwise)",
+    );
+  }
+
   const valid =
     !!checks.report_parsed &&
     !!checks.vcek_fetched &&
     !!checks.cert_chain_valid &&
     !!checks.crl_check_passed &&
-    !!checks.report_signature_valid;
+    !!checks.report_signature_valid &&
+    !!checks.debug_disabled &&
+    !!checks.tcb_ordering_valid;
 
   const report: Record<string, any> = {
     version: rpt.version,

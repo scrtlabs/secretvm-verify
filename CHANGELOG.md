@@ -12,6 +12,9 @@ All notable changes to `secretvm-verify` (both the Node and Python packages) are
 ### Security
 
 - **AMD ARK is now pinned** per product (Milan, Genoa, Turin) by SHA-256 of its SubjectPublicKeyInfo. Previously the AMD cert chain check (VCEK → ASK → ARK) verified the ARK was self-signed but didn't tie it to AMD — a DNS-spoof or compromised AMD KDS could substitute a self-signed impostor ARK and the chain would still pass. The fix anchors the chain in code, so trust no longer depends on TLS to `kdsintf.amd.com`. Applies to both the Node and Python packages.
+- **AMD policy is now enforced.** Two new check rows on the SEV-SNP path, both required for `valid=true`:
+  - **`debug_disabled`** — fails if the report has `debug_allowed=true`. A debug-mode VM exposes secrets; SecretVM should never trust one. Mirrors the equivalent `td_attributes.debug=0` check that the TDX path inherits from `dcap-qvl-js`.
+  - **`tcb_ordering_valid`** — fails if `current_tcb >= committed_tcb >= launch_tcb` is violated componentwise (per the SEV-SNP firmware ABI; an inversion indicates a firmware downgrade or a malformed report).
 
 ### Changed
 

@@ -186,6 +186,35 @@ class TestAmdAttestation:
             pytest.skip("AMD KDS rate-limited")
         assert result.checks["report_signature_valid"] is False
 
+    def test_rejects_debug_allowed(self, amd_quote):
+        """Set bit 19 of the policy field to force debug_allowed=true."""
+        import base64
+        raw = base64.b64decode(amd_quote.strip())
+        tampered = bytearray(raw)
+        # Policy is u64 at 0x008; bit 19 is DEBUG. Lives in byte 0x00A, bit 3.
+        tampered[0x00A] |= 0x08
+        data = base64.b64encode(tampered).decode()
+        result = check_sev_cpu_attestation(data, product="Genoa")
+        if result.checks.get("vcek_fetched") is False and "429" in str(result.errors):
+            pytest.skip("AMD KDS rate-limited")
+        assert result.report["debug_allowed"] is True
+        assert result.checks["debug_disabled"] is False
+        assert result.valid is False
+
+    def test_rejects_tcb_inversion(self, amd_quote):
+        """Bump committed_tcb.snp above current_tcb.snp to break ordering."""
+        import base64
+        raw = base64.b64decode(amd_quote.strip())
+        tampered = bytearray(raw)
+        # committed_tcb at 0x1E0; .snp is at offset +6 in the 8-byte struct.
+        tampered[0x1E0 + 6] = 0xFF
+        data = base64.b64encode(tampered).decode()
+        result = check_sev_cpu_attestation(data, product="Genoa")
+        if result.checks.get("vcek_fetched") is False and "429" in str(result.errors):
+            pytest.skip("AMD KDS rate-limited")
+        assert result.checks["tcb_ordering_valid"] is False
+        assert result.valid is False
+
 
 # ---------------------------------------------------------------------------
 # CPU auto-detect (TDX vs SEV-SNP)

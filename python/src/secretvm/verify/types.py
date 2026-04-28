@@ -28,6 +28,8 @@ _CHECK_ORDER = (
     "cert_chain_valid",
     "crl_check_passed",
     "report_signature_valid",
+    "debug_disabled",
+    "tcb_ordering_valid",
     # VM-level rollup
     "cpu_quote_verified",
     "tls_binding_verified",

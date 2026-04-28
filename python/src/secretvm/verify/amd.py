@@ -34,6 +34,19 @@ def _amd_parse_tcb(raw: bytes) -> dict:
     }
 
 
+def _amd_tcb_gte(a: dict, b: dict) -> bool:
+    return (
+        a["boot_loader"] >= b["boot_loader"]
+        and a["tee"] >= b["tee"]
+        and a["snp"] >= b["snp"]
+        and a["microcode"] >= b["microcode"]
+    )
+
+
+def _amd_is_tcb_ordered(current: dict, committed: dict, launch: dict) -> bool:
+    return _amd_tcb_gte(current, committed) and _amd_tcb_gte(committed, launch)
+
+
 def _amd_parse_report(raw: bytes) -> dict:
     if len(raw) < _AMD_REPORT_SIZE:
         raise ValueError(f"Report too short: {len(raw)} bytes (expected {_AMD_REPORT_SIZE})")
@@ -444,12 +457,30 @@ def check_sev_cpu_attestation(
     if not checks["report_signature_valid"]:
         errors.append("Report signature verification failed")
 
+    # Policy: SecretVM must not be running in debug mode (would expose secrets).
+    checks["debug_disabled"] = not rpt["debug_allowed"]
+    if not checks["debug_disabled"]:
+        errors.append("Report has debug_allowed=true (debug-mode VM is not trusted)")
+
+    # TCB monotonicity per the SEV-SNP firmware ABI: current_tcb >= committed_tcb
+    # >= launch_tcb componentwise. An inversion indicates a firmware downgrade
+    # or a malformed report.
+    checks["tcb_ordering_valid"] = _amd_is_tcb_ordered(
+        rpt["current_tcb"], rpt["committed_tcb"], rpt["launch_tcb"],
+    )
+    if not checks["tcb_ordering_valid"]:
+        errors.append(
+            "TCB ordering invalid (expected current >= committed >= launch componentwise)"
+        )
+
     valid = all([
         checks.get("report_parsed"),
         checks.get("vcek_fetched"),
         checks.get("cert_chain_valid"),
         checks.get("crl_check_passed"),
         checks.get("report_signature_valid"),
+        checks.get("debug_disabled"),
+        checks.get("tcb_ordering_valid"),
     ])
 
     report = {

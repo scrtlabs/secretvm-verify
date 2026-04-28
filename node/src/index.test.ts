@@ -176,6 +176,44 @@ describe("checkSevCpuAttestation", () => {
     if (skipIfRateLimited(result)) return;
     assert.equal(result.checks.report_signature_valid, false);
   });
+
+  it("rejects debug_allowed=true", async () => {
+    // Policy is u64 at 0x008; bit 19 is DEBUG. Bit 19 lives in byte 0x00A,
+    // bit 3 (0x08). Setting it forces debug_allowed=true.
+    const raw = Buffer.from(
+      loadFixture("amd_cpu_quote.txt").trim(),
+      "base64",
+    );
+    const tampered = Buffer.from(raw);
+    tampered[0x00a]! |= 0x08;
+    const result = await checkSevCpuAttestation(
+      tampered.toString("base64"),
+      "Genoa",
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.report.debug_allowed, true);
+    assert.equal(result.checks.debug_disabled, false);
+    assert.equal(result.valid, false);
+  });
+
+  it("rejects TCB ordering inversion", async () => {
+    // Bump committed_tcb.snp above current_tcb.snp to break the
+    // current >= committed invariant. committed_tcb is at 0x1E0; .snp is
+    // at offset +6 in the 8-byte TcbVersion struct.
+    const raw = Buffer.from(
+      loadFixture("amd_cpu_quote.txt").trim(),
+      "base64",
+    );
+    const tampered = Buffer.from(raw);
+    tampered[0x1e0 + 6] = 0xff;
+    const result = await checkSevCpuAttestation(
+      tampered.toString("base64"),
+      "Genoa",
+    );
+    if (skipIfRateLimited(result)) return;
+    assert.equal(result.checks.tcb_ordering_valid, false);
+    assert.equal(result.valid, false);
+  });
 });
 
 // ---------------------------------------------------------------------------
