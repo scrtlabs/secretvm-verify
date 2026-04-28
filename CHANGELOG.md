@@ -15,6 +15,7 @@ All notable changes to `secretvm-verify` (both the Node and Python packages) are
 - **AMD policy is now enforced.** Two new check rows on the SEV-SNP path, both required for `valid=true`:
   - **`debug_disabled`** — fails if the report has `debug_allowed=true`. A debug-mode VM exposes secrets; SecretVM should never trust one. Mirrors the equivalent `td_attributes.debug=0` check that the TDX path inherits from `dcap-qvl-js`.
   - **`tcb_ordering_valid`** — fails if `current_tcb >= committed_tcb >= launch_tcb` is violated componentwise (per the SEV-SNP firmware ABI; an inversion indicates a firmware downgrade or a malformed report).
+- **AMD CRL signature is now verified.** New `crl_signature_valid` check on the SEV-SNP path, required for `valid=true`. Previously the verifier parsed the CRL and consulted the revoked-serial list but never confirmed the CRL itself was signed by AMD — a forged CRL with revocations stripped would slip through. The fix verifies the CRL's `tbsCertList` signature against the pinned ARK public key (RSA-PSS-SHA384, salt 48), as AMD KDS specifies. Applies to both the Node and Python packages.
 
 ### Changed
 

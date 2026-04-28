@@ -349,6 +349,77 @@ async function fetchCrl(
   return der;
 }
 
+/**
+ * Verify the AMD VCEK CRL signature against the ARK public key.
+ *
+ * AMD signs `/vcek/v1/{product}/crl` directly with the ARK private key
+ * using RSA-PSS-SHA384 (salt length 48). Without this check, a forged
+ * or replayed CRL with revocation entries removed would slip through
+ * the revocation step — the previous behaviour only consulted the
+ * revoked-serial list.
+ *
+ * Walks the outer DER manually so we can hand the un-modified
+ * `tbsCertList` bytes to `crypto.verify`. Re-encoding via asn1.js
+ * is not guaranteed to reproduce the original byte-for-byte.
+ */
+function verifyCrlSignature(crlDer: Buffer, chainPem: string): boolean {
+  const blocks = splitPem(chainPem);
+  if (blocks.length < 2) return false;
+  const ark = new crypto.X509Certificate(blocks[1]!);
+
+  // CertificateList ::= SEQUENCE { tbsCertList SEQUENCE, sigAlg SEQUENCE, sig BIT STRING }
+  if (crlDer[0] !== 0x30) return false;
+  let cur = parseDerLength(crlDer, 1).offset;
+
+  // tbsCertList — capture raw bytes for signature verification
+  if (crlDer[cur] !== 0x30) return false;
+  const tbsStart = cur;
+  const tbsLen = parseDerLength(crlDer, cur + 1);
+  cur = tbsLen.offset + tbsLen.length;
+  const tbsBytes = crlDer.subarray(tbsStart, cur);
+
+  // signatureAlgorithm — skip
+  if (crlDer[cur] !== 0x30) return false;
+  const sigAlgLen = parseDerLength(crlDer, cur + 1);
+  cur = sigAlgLen.offset + sigAlgLen.length;
+
+  // signatureValue BIT STRING — first content byte is unused-bits count (0)
+  if (crlDer[cur] !== 0x03) return false;
+  const sigBitLen = parseDerLength(crlDer, cur + 1);
+  if (crlDer[sigBitLen.offset] !== 0x00) return false;
+  const sigBytes = crlDer.subarray(
+    sigBitLen.offset + 1,
+    sigBitLen.offset + sigBitLen.length,
+  );
+
+  try {
+    return crypto.verify(
+      "sha384",
+      tbsBytes,
+      {
+        key: ark.publicKey,
+        padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+        saltLength: 48,
+      },
+      sigBytes,
+    );
+  } catch {
+    return false;
+  }
+}
+
+function parseDerLength(buf: Buffer, offset: number): { length: number; offset: number } {
+  let len = buf[offset]!;
+  offset += 1;
+  if (len < 0x80) return { length: len, offset };
+  const numBytes = len & 0x7f;
+  let actualLen = 0;
+  for (let i = 0; i < numBytes; i++) {
+    actualLen = (actualLen << 8) | buf[offset++]!;
+  }
+  return { length: actualLen, offset };
+}
+
 /** Return true if the VCEK is NOT in the CRL (i.e. not revoked). */
 function checkVcekRevocation(vcekDer: Buffer, crlDer: Buffer): boolean {
   const cert = new crypto.X509Certificate(vcekDer);
@@ -523,8 +594,9 @@ export async function checkSevCpuAttestation(
   }
 
   // Verify cert chain (VCEK -> ASK -> ARK)
+  let chainPem: string | undefined;
   try {
-    const chainPem = await fetchChainPem(detectedProduct, reloadAmdKds, strict);
+    chainPem = await fetchChainPem(detectedProduct, reloadAmdKds, strict);
     checks.cert_chain_valid = verifyCertChain(vcekDer, chainPem, detectedProduct);
     if (!checks.cert_chain_valid) {
       errors.push(
@@ -536,10 +608,18 @@ export async function checkSevCpuAttestation(
     errors.push(`Failed to verify cert chain: ${e.message}`);
   }
 
-  // CRL revocation check — fetch the AMD VCEK CRL and confirm the leaf
-  // cert's serial number is not in the revoked list. Cached for 7 days.
+  // CRL signature + revocation. Both gates required for valid=true: the
+  // signature ties the CRL contents to AMD's ARK (so a forged CRL with
+  // revocations stripped won't pass), and the revocation check confirms
+  // the VCEK serial isn't on the list.
   try {
     const crlDer = await fetchCrl(detectedProduct, reloadAmdKds, strict);
+    checks.crl_signature_valid = chainPem
+      ? verifyCrlSignature(crlDer, chainPem)
+      : false;
+    if (!checks.crl_signature_valid) {
+      errors.push("AMD CRL signature verification failed");
+    }
     checks.crl_check_passed = checkVcekRevocation(vcekDer, crlDer);
     if (!checks.crl_check_passed) {
       const cert = new crypto.X509Certificate(vcekDer);
@@ -548,6 +628,7 @@ export async function checkSevCpuAttestation(
       );
     }
   } catch (e: any) {
+    checks.crl_signature_valid = false;
     checks.crl_check_passed = false;
     errors.push(`CRL revocation check failed: ${e.message}`);
   }
@@ -578,6 +659,7 @@ export async function checkSevCpuAttestation(
     !!checks.report_parsed &&
     !!checks.vcek_fetched &&
     !!checks.cert_chain_valid &&
+    !!checks.crl_signature_valid &&
     !!checks.crl_check_passed &&
     !!checks.report_signature_valid &&
     !!checks.debug_disabled &&

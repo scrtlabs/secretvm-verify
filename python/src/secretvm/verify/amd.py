@@ -5,6 +5,7 @@ import base64
 import datetime
 import hashlib
 import struct
+from typing import Optional
 
 import requests
 from cryptography.hazmat.primitives.asymmetric import ec, utils
@@ -327,6 +328,32 @@ def _amd_spki_sha256_hex(cert) -> str:
     return hashlib.sha256(spki_der).hexdigest()
 
 
+def _amd_verify_crl_signature(crl_der: bytes, chain_pem: bytes) -> bool:
+    """Verify the AMD VCEK CRL signature against the ARK public key.
+
+    AMD signs ``/vcek/v1/{product}/crl`` directly with the ARK private key
+    using RSA-PSS-SHA384 (salt length 48). Without this check, a forged or
+    replayed CRL with revocation entries removed would slip through the
+    revocation step.
+    """
+    from cryptography.hazmat.primitives.asymmetric import padding
+    pem_blocks = _amd_split_pem(chain_pem)
+    if len(pem_blocks) < 2:
+        return False
+    ark = load_pem_x509_certificate(pem_blocks[1])
+    try:
+        crl = load_der_x509_crl(crl_der)
+        ark.public_key().verify(
+            crl.signature,
+            crl.tbs_certlist_bytes,
+            padding.PSS(mgf=padding.MGF1(hashes.SHA384()), salt_length=48),
+            hashes.SHA384(),
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _amd_verify_cert_chain(vcek_der: bytes, chain_pem: bytes, product: str) -> bool:
     """Verify VCEK -> ASK -> ARK certificate chain and pin the ARK to AMD."""
     pem_blocks = _amd_split_pem(chain_pem)
@@ -430,6 +457,7 @@ def check_sev_cpu_attestation(
         )
 
     # Verify cert chain (VCEK -> ASK -> ARK)
+    chain_pem: Optional[bytes] = None
     try:
         chain_pem = _amd_fetch_chain_pem(detected_product, reload_amd_kds=reload_amd_kds, strict=strict)
         checks["cert_chain_valid"] = _amd_verify_cert_chain(vcek_der, chain_pem, detected_product)
@@ -439,16 +467,24 @@ def check_sev_cpu_attestation(
         checks["cert_chain_valid"] = False
         errors.append(f"Failed to verify cert chain: {e}")
 
-    # CRL revocation check — fetch the AMD VCEK CRL and confirm the leaf
-    # cert's serial number is not in the revoked list. Cached for 7 days.
+    # CRL signature + revocation. Both gates required for valid=true: the
+    # signature ties the CRL contents to AMD's ARK (so a forged CRL with
+    # revocations stripped won't pass), and the revocation check confirms
+    # the VCEK serial isn't on the list.
     try:
         crl_der = _amd_fetch_crl(detected_product, reload_amd_kds=reload_amd_kds, strict=strict)
+        checks["crl_signature_valid"] = (
+            _amd_verify_crl_signature(crl_der, chain_pem) if chain_pem is not None else False
+        )
+        if not checks["crl_signature_valid"]:
+            errors.append("AMD CRL signature verification failed")
         checks["crl_check_passed"] = _amd_check_vcek_revocation(vcek, crl_der)
         if not checks["crl_check_passed"]:
             errors.append(
                 f"VCEK serial {vcek.serial_number:x} is revoked per AMD CRL"
             )
     except Exception as e:
+        checks["crl_signature_valid"] = False
         checks["crl_check_passed"] = False
         errors.append(f"CRL revocation check failed: {e}")
 
@@ -477,6 +513,7 @@ def check_sev_cpu_attestation(
         checks.get("report_parsed"),
         checks.get("vcek_fetched"),
         checks.get("cert_chain_valid"),
+        checks.get("crl_signature_valid"),
         checks.get("crl_check_passed"),
         checks.get("report_signature_valid"),
         checks.get("debug_disabled"),

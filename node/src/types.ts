@@ -34,6 +34,7 @@ const CHECK_ORDER: string[] = [
   "report_parsed",
   "vcek_fetched",
   "cert_chain_valid",
+  "crl_signature_valid",
   "crl_check_passed",
   "report_signature_valid",
   "debug_disabled",
