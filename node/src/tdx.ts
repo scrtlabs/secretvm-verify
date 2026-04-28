@@ -116,7 +116,20 @@ export async function checkTdxCpuAttestation(
     errors.push(`Quote verification failed: ${e.message}`);
   }
 
-  const valid = !!checks.quote_parsed && !!checks.quote_verified;
+  // Policy: TDX must not be running in debug mode (would expose secrets).
+  // Bit 0 of td_attributes[0] is the DEBUG flag (TUD = TD-Under-Debug).
+  // dcap-qvl already rejects debug-mode quotes inside verify(), so this
+  // mirrors the SEV-SNP `debug_disabled` check for symmetry in the per-
+  // check breakdown.
+  checks.debug_disabled = (td.tdAttributes[0]! & 0x01) === 0;
+  if (!checks.debug_disabled) {
+    errors.push("TDX td_attributes has DEBUG bit set (debug-mode VM is not trusted)");
+  }
+
+  const valid =
+    !!checks.quote_parsed &&
+    !!checks.quote_verified &&
+    !!checks.debug_disabled;
 
   const report: Record<string, any> = {
     version: q.version,
