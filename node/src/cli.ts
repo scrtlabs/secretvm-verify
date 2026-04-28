@@ -76,6 +76,9 @@ const vmUrl = getFlagValue("--vm");
 // `--reload-amd-kds` bypasses the local AMD KDS cache and re-fetches
 // VCEK, AMD CA cert chain, and CRL from kdsintf.amd.com. No effect on TDX.
 const reloadAmdKds = getFlag("--reload-amd-kds");
+// `--strict` disables the stale-cache fallback when AMD KDS is unreachable
+// or rate-limited. Trades availability for freshness. No effect on TDX.
+const strict = getFlag("--strict");
 // `--docker-files <path>` points at a tar archive of Dockerfiles baked into
 // the VM image. On TDX the SHA-256 digest becomes RTMR3 log[2]; on SEV-SNP
 // it is appended to the kernel cmdline as `docker_additional_files_hash=...`.
@@ -172,6 +175,9 @@ Options:
   --verbose, -v        Print all attestation report fields (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
+  --strict             Fail closed when AMD KDS is unreachable or rate-limited
+                       instead of falling back to a stale cached entry. Trades
+                       availability for freshness. No effect on TDX.
   --proof-of-cloud     Verify if the machine is registered with ProofOfCloud alliance. Optional
   --show-compose       Print the docker-compose.yaml that was verified, after the
                        check list. Works with --secretvm, --verify-workload,
@@ -226,12 +232,12 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput);
+    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput, strict);
   } else if (getFlag("--cpu")) {
     const quoteData = await getCpuQuote("--cpu");
     const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
     if (!jsonOut) console.log(`Verifying CPU quote from ${source} ...\n`);
-    result = await checkCpuAttestation(quoteData, product, reloadAmdKds);
+    result = await checkCpuAttestation(quoteData, product, reloadAmdKds, strict);
     if (checkPoc) result = await mergeProofOfCloud(result, quoteData);
   } else if (getFlag("--tdx")) {
     const quoteData = await getCpuQuote("--tdx");
@@ -243,7 +249,7 @@ try {
     const quoteData = await getCpuQuote("--sev");
     const source = vmUrl ? vmUrl : getFlagValue("--sev") ?? getPositional();
     if (!jsonOut) console.log(`Verifying AMD SEV-SNP report from ${source} ...\n`);
-    result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
+    result = await checkSevCpuAttestation(quoteData, product, reloadAmdKds, strict);
     if (checkPoc) result = await mergeProofOfCloud(result, quoteData);
   } else if (getFlag("--gpu")) {
     const quoteData = await getGpuQuote("--gpu");
@@ -255,7 +261,7 @@ try {
     const quoteType = detectCpuQuoteType(quoteData);
     if (quoteType === "SEV-SNP") {
       // Step 1: cryptographic quote verification
-      const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
+      const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds, strict);
       // Step 2: registry lookup
       const version = await resolveAmdSevVersion(quoteData);
       if (raw) {
@@ -319,7 +325,7 @@ try {
     const quoteType = detectCpuQuoteType(quoteData);
     if (quoteType === "SEV-SNP") {
       // Step 1: cryptographic quote verification
-      const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds);
+      const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds, strict);
       if (raw) {
         const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
         console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
@@ -390,7 +396,7 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Resolving and verifying agent ${id} on ${chain} ...\n`);
-    result = await checkAgent(Number(id), chain, reloadAmdKds, checkPoc);
+    result = await checkAgent(Number(id), chain, reloadAmdKds, checkPoc, strict);
   } else if (getFlag("--agent")) {
     const file = getFlagValue("--agent") ?? getPositional();
     if (!file) {
@@ -399,7 +405,7 @@ try {
     }
     const metadata = JSON.parse(readFileSync(file, "utf8"));
     if (!jsonOut) console.log(`Verifying agent "${metadata.name}" ...\n`);
-    result = await verifyAgent(metadata, reloadAmdKds, checkPoc);
+    result = await verifyAgent(metadata, reloadAmdKds, checkPoc, strict);
   } else if (getFlag("--compose") && !getFlag("--verify-workload") && !getFlag("-vw")) {
     // Standalone verb: just fetch/read the docker-compose and print to stdout.
     // (`--compose` also works as an option inside `--verify-workload`; the guard

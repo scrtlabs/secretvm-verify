@@ -33,6 +33,7 @@ export async function checkSecretVm(
   reloadAmdKds = false,
   checkProofOfCloud = false,
   dockerFilesInput?: DockerFilesInput,
+  strict = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -73,7 +74,7 @@ export async function checkSecretVm(
     return makeResult("SECRET-VM", { checks: orderChecks(checks), report, errors });
   }
 
-  const cpuResult = await checkCpuAttestation(cpuData, product, reloadAmdKds);
+  const cpuResult = await checkCpuAttestation(cpuData, product, reloadAmdKds, strict);
   checks.cpu_quote_verified = cpuResult.valid;
   report.cpu = cpuResult.report;
   report.cpu_type = cpuResult.attestationType;

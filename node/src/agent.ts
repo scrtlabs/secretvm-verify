@@ -159,6 +159,7 @@ export async function verifyAgent(
   metadata: AgentMetadata,
   reloadAmdKds = false,
   checkProofOfCloud = false,
+  strict = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -227,7 +228,7 @@ export async function verifyAgent(
     return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
   }
 
-  const cpuResult = await checkCpuAttestation(cpuData, "", reloadAmdKds);
+  const cpuResult = await checkCpuAttestation(cpuData, "", reloadAmdKds, strict);
   checks.cpu_quote_verified = cpuResult.valid;
   report.cpu = cpuResult.report;
   report.cpu_type = cpuResult.attestationType;
@@ -365,6 +366,7 @@ export async function checkAgent(
   chain: string,
   reloadAmdKds = false,
   checkProofOfCloud = false,
+  strict = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -379,7 +381,7 @@ export async function checkAgent(
     return makeResult("ERC-8004", { checks: orderChecks(checks), errors });
   }
 
-  const result = await verifyAgent(metadata, reloadAmdKds, checkProofOfCloud);
+  const result = await verifyAgent(metadata, reloadAmdKds, checkProofOfCloud, strict);
   result.checks = { agent_resolved: true, ...result.checks };
 
   return result;

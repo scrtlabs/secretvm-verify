@@ -69,6 +69,7 @@ def check_secret_vm(
     check_proof_of_cloud: bool = False,
     docker_files: Optional[bytes] = None,
     docker_files_sha256: Optional[str] = None,
+    strict: bool = False,
 ) -> AttestationResult:
     """Verify a Secret VM by fetching CPU and GPU attestation from its endpoints.
 
@@ -125,7 +126,7 @@ def check_secret_vm(
         )
 
     cpu_result = pkg.check_cpu_attestation(
-        cpu_data, product=product, reload_amd_kds=reload_amd_kds,
+        cpu_data, product=product, reload_amd_kds=reload_amd_kds, strict=strict,
     )
     checks["cpu_quote_verified"] = cpu_result.valid
     report["cpu"] = cpu_result.report
@@ -251,6 +252,7 @@ async def check_secret_vm_async(
     check_proof_of_cloud: bool = False,
     docker_files: Optional[bytes] = None,
     docker_files_sha256: Optional[str] = None,
+    strict: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`check_secret_vm`.
 
@@ -263,5 +265,5 @@ async def check_secret_vm_async(
     """
     return await asyncio.to_thread(
         check_secret_vm, url, product, reload_amd_kds, check_proof_of_cloud,
-        docker_files, docker_files_sha256,
+        docker_files, docker_files_sha256, strict,
     )

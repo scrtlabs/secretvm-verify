@@ -41,11 +41,15 @@ export function detectCpuQuoteType(data: string): "TDX" | "SEV-SNP" | "unknown" 
  *
  * @param reloadAmdKds If true, bypass the local AMD KDS cache and re-fetch
  *   VCEK / cert chain / CRL. No effect on the TDX path (which doesn't cache).
+ * @param strict If true, fail closed when AMD KDS is unreachable rather
+ *   than falling back to a stale cached entry. Trades availability for
+ *   freshness. No effect on the TDX path.
  */
 export async function checkCpuAttestation(
   dataOrUrl: string,
   product = "",
   reloadAmdKds = false,
+  strict = false,
 ): Promise<AttestationResult> {
   const data = isVmUrl(dataOrUrl) ? await fetchCpuQuote(dataOrUrl) : dataOrUrl;
   const quoteType = detectCpuQuoteType(data);
@@ -54,7 +58,7 @@ export async function checkCpuAttestation(
     return checkTdxCpuAttestation(data);
   }
   if (quoteType === "SEV-SNP") {
-    return checkSevCpuAttestation(data, product, reloadAmdKds);
+    return checkSevCpuAttestation(data, product, reloadAmdKds, strict);
   }
 
   return makeResult("unknown", {

@@ -352,6 +352,8 @@ openssl crl -in ~/.cache/secretvm-verify/amd/crl/Genoa -inform DER -text -noout
 
 **Network failure fallback.** If AMD KDS is unreachable or returns an error, the cache falls back to a stale entry rather than failing the verification. Better to verify with a slightly old CRL than to fail every SEV-SNP attestation while KDS is down.
 
+**Strict mode** (`--strict` on the CLI, `strict=true` in the SDK) disables this fallback. In strict mode, a failed live fetch is *not* rescued by a stale cached entry — the verification fails closed. Use this when freshness matters more than availability (e.g. enforcing CRL freshness so a recently revoked VCEK can't slip through).
+
 **Force a refresh** (skip the cache for this call, fetch fresh, write back to cache):
 
 CLI:

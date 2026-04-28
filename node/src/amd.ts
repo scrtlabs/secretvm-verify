@@ -196,11 +196,25 @@ function vcekCacheKey(
   );
 }
 
+/**
+ * Stale cache fallback. In strict mode this returns null so the caller
+ * fails closed; otherwise returns the stale entry if one exists.
+ */
+function staleFallback(
+  kind: string,
+  key: string,
+  strict: boolean,
+): Buffer | null {
+  if (strict) return null;
+  return kdsCache.getStale(kind, key);
+}
+
 async function fetchVcek(
   product: string,
   chipId: Buffer,
   reportedTcb: TcbVersion,
   reloadAmdKds = false,
+  strict = false,
 ): Promise<{ der: Buffer; product: string }> {
   const candidates = product ? [product] : ["Genoa", "Milan", "Turin"];
   for (const name of candidates) {
@@ -216,8 +230,9 @@ async function fetchVcek(
     try {
       resp = await fetch(url);
     } catch (e) {
-      // Network failure: fall back to a stale cached entry if we have one.
-      const stale = kdsCache.getStale("vcek", cacheKey);
+      // Network failure: fall back to a stale cached entry if we have one
+      // (unless strict mode, in which case fail closed).
+      const stale = staleFallback("vcek", cacheKey, strict);
       if (stale) return { der: stale, product: name };
       throw e;
     }
@@ -228,14 +243,14 @@ async function fetchVcek(
     }
     if (resp.status === 429) {
       // Last-ditch fallback: serve a stale cached entry rather than fail.
-      const stale = kdsCache.getStale("vcek", cacheKey);
+      const stale = staleFallback("vcek", cacheKey, strict);
       if (stale) return { der: stale, product: name };
       throw new Error(
         "AMD KDS rate-limited (429). Retry later or specify product.",
       );
     }
     if (product) {
-      const stale = kdsCache.getStale("vcek", cacheKey);
+      const stale = staleFallback("vcek", cacheKey, strict);
       if (stale) return { der: stale, product: name };
       throw new Error(`AMD KDS returned ${resp.status}`);
     }
@@ -245,7 +260,11 @@ async function fetchVcek(
   );
 }
 
-async function fetchChainPem(product: string, reloadAmdKds = false): Promise<string> {
+async function fetchChainPem(
+  product: string,
+  reloadAmdKds = false,
+  strict = false,
+): Promise<string> {
   if (!reloadAmdKds) {
     const cached = kdsCache.get("cert_chain", product);
     if (cached) return cached.toString("utf8");
@@ -255,12 +274,12 @@ async function fetchChainPem(product: string, reloadAmdKds = false): Promise<str
   try {
     resp = await fetch(url);
   } catch (e) {
-    const stale = kdsCache.getStale("cert_chain", product);
+    const stale = staleFallback("cert_chain", product, strict);
     if (stale) return stale.toString("utf8");
     throw e;
   }
   if (!resp.ok) {
-    const stale = kdsCache.getStale("cert_chain", product);
+    const stale = staleFallback("cert_chain", product, strict);
     if (stale) return stale.toString("utf8");
     throw new Error(`AMD KDS cert_chain returned ${resp.status}`);
   }
@@ -276,9 +295,14 @@ async function fetchChainPem(product: string, reloadAmdKds = false): Promise<str
  * naturally aligns with AMD's published refresh schedule. If the CRL has no
  * `nextUpdate` (rare) or parsing fails, we fall back to a 7-day TTL.
  * On network failure we fall back to a stale cached entry rather than
- * failing every SEV verification while KDS is down.
+ * failing every SEV verification while KDS is down (unless strict=true,
+ * in which case the caller wants to fail closed instead).
  */
-async function fetchCrl(product: string, reloadAmdKds = false): Promise<Buffer> {
+async function fetchCrl(
+  product: string,
+  reloadAmdKds = false,
+  strict = false,
+): Promise<Buffer> {
   if (!reloadAmdKds) {
     const cached = kdsCache.get("crl", product);
     if (cached) return cached;
@@ -288,12 +312,12 @@ async function fetchCrl(product: string, reloadAmdKds = false): Promise<Buffer> 
   try {
     resp = await fetch(url);
   } catch (e) {
-    const stale = kdsCache.getStale("crl", product);
+    const stale = staleFallback("crl", product, strict);
     if (stale) return stale;
     throw e;
   }
   if (!resp.ok) {
-    const stale = kdsCache.getStale("crl", product);
+    const stale = staleFallback("crl", product, strict);
     if (stale) return stale;
     throw new Error(`AMD KDS crl returned ${resp.status}`);
   }
@@ -442,6 +466,7 @@ export async function checkSevCpuAttestation(
   dataOrUrl: string,
   product = "",
   reloadAmdKds = false,
+  strict = false,
 ): Promise<AttestationResult> {
   const data = isVmUrl(dataOrUrl) ? await fetchCpuQuote(dataOrUrl) : dataOrUrl;
   const errors: string[] = [];
@@ -474,7 +499,7 @@ export async function checkSevCpuAttestation(
   let vcekDer: Buffer;
   let detectedProduct: string;
   try {
-    const result = await fetchVcek(product, rpt.chipId, rpt.reportedTcb, reloadAmdKds);
+    const result = await fetchVcek(product, rpt.chipId, rpt.reportedTcb, reloadAmdKds, strict);
     vcekDer = result.der;
     detectedProduct = result.product;
     checks.vcek_fetched = true;
@@ -486,7 +511,7 @@ export async function checkSevCpuAttestation(
 
   // Verify cert chain (VCEK -> ASK -> ARK)
   try {
-    const chainPem = await fetchChainPem(detectedProduct, reloadAmdKds);
+    const chainPem = await fetchChainPem(detectedProduct, reloadAmdKds, strict);
     checks.cert_chain_valid = verifyCertChain(vcekDer, chainPem, detectedProduct);
     if (!checks.cert_chain_valid) {
       errors.push(
@@ -501,7 +526,7 @@ export async function checkSevCpuAttestation(
   // CRL revocation check — fetch the AMD VCEK CRL and confirm the leaf
   // cert's serial number is not in the revoked list. Cached for 7 days.
   try {
-    const crlDer = await fetchCrl(detectedProduct, reloadAmdKds);
+    const crlDer = await fetchCrl(detectedProduct, reloadAmdKds, strict);
     checks.crl_check_passed = checkVcekRevocation(vcekDer, crlDer);
     if (!checks.crl_check_passed) {
       const cert = new crypto.X509Certificate(vcekDer);

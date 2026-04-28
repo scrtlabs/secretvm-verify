@@ -208,6 +208,7 @@ def verify_agent(
     metadata: AgentMetadata,
     reload_amd_kds: bool = False,
     check_proof_of_cloud: bool = False,
+    strict: bool = False,
 ) -> AttestationResult:
     """Verify an ERC-8004 agent given its metadata.
 
@@ -293,7 +294,7 @@ def verify_agent(
             checks=order_checks(checks), report=report, errors=errors,
         )
 
-    cpu_result = check_cpu_attestation(cpu_data, reload_amd_kds=reload_amd_kds)
+    cpu_result = check_cpu_attestation(cpu_data, reload_amd_kds=reload_amd_kds, strict=strict)
     checks["cpu_quote_verified"] = cpu_result.valid
     report["cpu"] = cpu_result.report
     report["cpu_type"] = cpu_result.attestation_type
@@ -415,6 +416,7 @@ def check_agent(
     chain: str,
     reload_amd_kds: bool = False,
     check_proof_of_cloud: bool = False,
+    strict: bool = False,
 ) -> AttestationResult:
     """End-to-end ERC-8004 agent verification.
 
@@ -426,6 +428,8 @@ def check_agent(
         chain: Chain name (e.g. "base", "ethereum", "arbitrum").
         reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
             VCEK / cert chain / CRL. No effect on TDX agents.
+        strict: If True, fail closed when AMD KDS is unreachable rather
+            than falling back to a stale cached entry. No effect on TDX.
 
     Returns:
         AttestationResult with attestation_type="ERC-8004".
@@ -443,6 +447,7 @@ def check_agent(
         metadata,
         reload_amd_kds=reload_amd_kds,
         check_proof_of_cloud=check_proof_of_cloud,
+        strict=strict,
     )
     result.checks = {"agent_resolved": True, **result.checks}
     return result
@@ -452,6 +457,7 @@ async def verify_agent_async(
     metadata: AgentMetadata,
     reload_amd_kds: bool = False,
     check_proof_of_cloud: bool = False,
+    strict: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`verify_agent`.
 
@@ -459,7 +465,7 @@ async def verify_agent_async(
     the synchronous wrapper to a thread pool via :func:`asyncio.to_thread`.
     """
     return await asyncio.to_thread(
-        verify_agent, metadata, reload_amd_kds, check_proof_of_cloud,
+        verify_agent, metadata, reload_amd_kds, check_proof_of_cloud, strict,
     )
 
 
@@ -468,6 +474,7 @@ async def check_agent_async(
     chain: str,
     reload_amd_kds: bool = False,
     check_proof_of_cloud: bool = False,
+    strict: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`check_agent`.
 
@@ -476,5 +483,5 @@ async def check_agent_async(
     thread pool via :func:`asyncio.to_thread`.
     """
     return await asyncio.to_thread(
-        check_agent, agent_id, chain, reload_amd_kds, check_proof_of_cloud,
+        check_agent, agent_id, chain, reload_amd_kds, check_proof_of_cloud, strict,
     )

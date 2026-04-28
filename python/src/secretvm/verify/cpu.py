@@ -44,6 +44,7 @@ def check_cpu_attestation(
     data_or_url: str,
     product: str = "",
     reload_amd_kds: bool = False,
+    strict: bool = False,
 ) -> AttestationResult:
     """Verify a CPU attestation quote, auto-detecting Intel TDX vs AMD SEV-SNP.
 
@@ -53,6 +54,8 @@ def check_cpu_attestation(
         reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
             VCEK / cert chain / CRL from kdsintf.amd.com. No effect on the
             TDX path (which doesn't cache).
+        strict: If True, fail closed when AMD KDS is unreachable rather
+            than falling back to a stale cached entry. No effect on TDX.
 
     Returns:
         AttestationResult with verification status and parsed report fields.
@@ -64,7 +67,9 @@ def check_cpu_attestation(
     if quote_type == "TDX":
         return check_tdx_cpu_attestation(data)
     elif quote_type == "SEV-SNP":
-        return check_sev_cpu_attestation(data, product=product, reload_amd_kds=reload_amd_kds)
+        return check_sev_cpu_attestation(
+            data, product=product, reload_amd_kds=reload_amd_kds, strict=strict,
+        )
     else:
         return AttestationResult(
             valid=False,
@@ -77,6 +82,7 @@ async def check_cpu_attestation_async(
     data_or_url: str,
     product: str = "",
     reload_amd_kds: bool = False,
+    strict: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`check_cpu_attestation`.
 
@@ -101,7 +107,7 @@ async def check_cpu_attestation_async(
         return await check_tdx_cpu_attestation_async(data)
     elif quote_type == "SEV-SNP":
         return await check_sev_cpu_attestation_async(
-            data, product=product, reload_amd_kds=reload_amd_kds,
+            data, product=product, reload_amd_kds=reload_amd_kds, strict=strict,
         )
     else:
         return AttestationResult(

@@ -7,6 +7,7 @@ All notable changes to `secretvm-verify` (both the Node and Python packages) are
 ### Added
 
 - **`SECRETVM_PCCS_URL` environment variable** — overrides the PCCS server used to fetch Intel TDX collateral (TCB Info, QE Identity, CRLs). Defaults to `https://pccs.scrtlabs.com`. Useful for self-hosted PCCS deployments or to point directly at Intel's PCS (`https://api.trustedservices.intel.com`). Honoured by both the Node and Python packages.
+- **Strict mode (`--strict` / `strict=True`)** — disables the stale-cache fallback when AMD KDS is unreachable, rate-limited (429), or returns a non-200. Trades availability for freshness: in strict mode, a stale cached VCEK / cert chain / CRL no longer rescues a failed live fetch, so a recently revoked VCEK can't slip through. Default is permissive (current behaviour). Available on `checkSecretVm`, `checkCpuAttestation`, `checkSevCpuAttestation`, `checkAgent`, `verifyAgent` (Node and Python, sync and async) and as a CLI flag on both `secretvm-verify` (Node) and `python check_vm.py`.
 
 ### Security
 

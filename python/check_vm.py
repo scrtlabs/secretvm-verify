@@ -25,13 +25,15 @@ def main():
         sys.exit(0)
 
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--proof-of-cloud] [--show-compose] [--docker-files <tar> | --docker-files-sha256 <hex>] [--version|-V]")
+        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--strict] [--proof-of-cloud] [--show-compose] [--docker-files <tar> | --docker-files-sha256 <hex>] [--version|-V]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
         print(f"  Default output is the per-check PASS/FAIL breakdown. Use --json for")
         print(f"  minimal JSON (no report fields), --raw for full JSON, or --verbose for")
         print(f"  the text breakdown with parsed CPU/GPU/proof-of-cloud quotes.")
         print(f"  --reload-amd-kds bypasses the local AMD KDS cache and re-fetches")
         print(f"  VCEK, CA cert chain, and CRL from kdsintf.amd.com (no effect on TDX).")
+        print(f"  --strict fails closed when AMD KDS is unreachable or rate-limited")
+        print(f"  instead of falling back to a stale cached entry. No effect on TDX.")
         print(f"  --proof-of-cloud also asks SCRT Labs' quote-parse endpoint to confirm")
         print(f"  the quote originated on a Secret VM (opt-in; off by default).")
         print(f"  --show-compose prints the docker-compose.yaml that was verified,")
@@ -49,6 +51,7 @@ def main():
     json_out = "--json" in sys.argv
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
     reload_amd_kds = "--reload-amd-kds" in sys.argv
+    strict = "--strict" in sys.argv
     check_poc = "--proof-of-cloud" in sys.argv
     show_compose = "--show-compose" in sys.argv
 
@@ -68,6 +71,7 @@ def main():
         check_proof_of_cloud=check_poc,
         docker_files=docker_files_bytes,
         docker_files_sha256=docker_files_sha256,
+        strict=strict,
     )
 
     if raw:
