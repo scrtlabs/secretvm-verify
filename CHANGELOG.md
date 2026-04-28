@@ -17,6 +17,10 @@ All notable changes to `secretvm-verify` (both the Node and Python packages) are
   - **`tcb_ordering_valid`** — fails if `current_tcb >= committed_tcb >= launch_tcb` is violated componentwise (per the SEV-SNP firmware ABI; an inversion indicates a firmware downgrade or a malformed report).
 - **AMD CRL signature is now verified.** New `crl_signature_valid` check on the SEV-SNP path, required for `valid=true`. Previously the verifier parsed the CRL and consulted the revoked-serial list but never confirmed the CRL itself was signed by AMD — a forged CRL with revocations stripped would slip through. The fix verifies the CRL's `tbsCertList` signature against the pinned ARK public key (RSA-PSS-SHA384, salt 48), as AMD KDS specifies. Applies to both the Node and Python packages.
 - **VCEK extensions are now checked against the report.** New `vcek_matches_report` check on the SEV-SNP path, required for `valid=true`. Previously we built the AMD KDS URL from the report's `chip_id` and `reported_tcb` and trusted KDS to return the matching cert. The fix parses the VCEK's custom OID extensions (HWID `1.3.6.1.4.1.3704.1.4`; TCB components `1.3.6.1.4.1.3704.1.3.{1,2,3,8}`) and compares them byte-for-byte to the report. Defends against a misbehaving KDS, a bug in URL construction, or any path that yields a real-but-wrong VCEK.
+- **AMD verification hardening:**
+  - Node's VCEK extension extraction now walks the cert structurally (asn1js: outer SEQUENCE → tbsCertificate → `[3]` extensions list, match by OID string) instead of `indexOf`-ing the OID byte sequence in the raw DER. Removes any chance of a false positive from an OID-shaped byte run inside a serial number or signature value.
+  - `vcekMatchesReport` is now wrapped in `try/catch` so a malformed cached or corrupt VCEK fails closed (`valid=false`) instead of throwing.
+  - The AMD CRL signature check now also confirms the CRL's issuer Name equals the ARK's subject Name. The signature check already ties the CRL bytes to the ARK key; the Name check removes any residual ambiguity about which CA the CRL is for. Applies to both Node and Python.
 
 ### Changed
 

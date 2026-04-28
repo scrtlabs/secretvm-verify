@@ -395,15 +395,20 @@ def _amd_verify_crl_signature(crl_der: bytes, chain_pem: bytes) -> bool:
     AMD signs ``/vcek/v1/{product}/crl`` directly with the ARK private key
     using RSA-PSS-SHA384 (salt length 48). Without this check, a forged or
     replayed CRL with revocation entries removed would slip through the
-    revocation step.
+    revocation step. Also confirms the CRL's issuer Name equals the ARK's
+    subject Name (defence-in-depth — the signature check already ties the
+    bytes to the ARK key, but explicit Name comparison removes any ambiguity
+    about which CA the CRL is for).
     """
     from cryptography.hazmat.primitives.asymmetric import padding
     pem_blocks = _amd_split_pem(chain_pem)
     if len(pem_blocks) < 2:
         return False
-    ark = load_pem_x509_certificate(pem_blocks[1])
     try:
+        ark = load_pem_x509_certificate(pem_blocks[1])
         crl = load_der_x509_crl(crl_der)
+        if crl.issuer != ark.subject:
+            return False
         ark.public_key().verify(
             crl.signature,
             crl.tbs_certlist_bytes,

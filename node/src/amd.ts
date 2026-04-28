@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { fromBER, Integer, Sequence, UTCTime } from "asn1js";
+import { fromBER, Integer, Sequence, OctetString, ObjectIdentifier, UTCTime } from "asn1js";
 import { utils as qvlUtils } from "@phala/dcap-qvl";
 import { isVmUrl, fetchCpuQuote } from "./url.js";
 import { AttestationResult, makeResult } from "./types.js";
@@ -363,36 +363,42 @@ async function fetchCrl(
  * is not guaranteed to reproduce the original byte-for-byte.
  */
 function verifyCrlSignature(crlDer: Buffer, chainPem: string): boolean {
-  const blocks = splitPem(chainPem);
-  if (blocks.length < 2) return false;
-  const ark = new crypto.X509Certificate(blocks[1]!);
-
-  // CertificateList ::= SEQUENCE { tbsCertList SEQUENCE, sigAlg SEQUENCE, sig BIT STRING }
-  if (crlDer[0] !== 0x30) return false;
-  let cur = parseDerLength(crlDer, 1).offset;
-
-  // tbsCertList — capture raw bytes for signature verification
-  if (crlDer[cur] !== 0x30) return false;
-  const tbsStart = cur;
-  const tbsLen = parseDerLength(crlDer, cur + 1);
-  cur = tbsLen.offset + tbsLen.length;
-  const tbsBytes = crlDer.subarray(tbsStart, cur);
-
-  // signatureAlgorithm — skip
-  if (crlDer[cur] !== 0x30) return false;
-  const sigAlgLen = parseDerLength(crlDer, cur + 1);
-  cur = sigAlgLen.offset + sigAlgLen.length;
-
-  // signatureValue BIT STRING — first content byte is unused-bits count (0)
-  if (crlDer[cur] !== 0x03) return false;
-  const sigBitLen = parseDerLength(crlDer, cur + 1);
-  if (crlDer[sigBitLen.offset] !== 0x00) return false;
-  const sigBytes = crlDer.subarray(
-    sigBitLen.offset + 1,
-    sigBitLen.offset + sigBitLen.length,
-  );
-
   try {
+    const blocks = splitPem(chainPem);
+    if (blocks.length < 2) return false;
+    const ark = new crypto.X509Certificate(blocks[1]!);
+
+    // CertificateList ::= SEQUENCE { tbsCertList SEQUENCE, sigAlg SEQUENCE, sig BIT STRING }
+    if (crlDer[0] !== 0x30) return false;
+    let cur = parseDerLength(crlDer, 1).offset;
+
+    // tbsCertList — capture raw bytes for signature verification
+    if (crlDer[cur] !== 0x30) return false;
+    const tbsStart = cur;
+    const tbsLen = parseDerLength(crlDer, cur + 1);
+    cur = tbsLen.offset + tbsLen.length;
+    const tbsBytes = crlDer.subarray(tbsStart, cur);
+
+    // Confirm the CRL's issuer DN equals the ARK's subject DN. The signature
+    // check above already ties the CRL bytes to the ARK key, so a mismatch
+    // would indicate AMD mislabelled the issuer field — but checking it
+    // explicitly removes any ambiguity about which CA the CRL is for.
+    if (!crlIssuerEqualsArkSubject(crlDer, Buffer.from(ark.raw))) return false;
+
+    // signatureAlgorithm — skip
+    if (crlDer[cur] !== 0x30) return false;
+    const sigAlgLen = parseDerLength(crlDer, cur + 1);
+    cur = sigAlgLen.offset + sigAlgLen.length;
+
+    // signatureValue BIT STRING — first content byte is unused-bits count (0)
+    if (crlDer[cur] !== 0x03) return false;
+    const sigBitLen = parseDerLength(crlDer, cur + 1);
+    if (crlDer[sigBitLen.offset] !== 0x00) return false;
+    const sigBytes = crlDer.subarray(
+      sigBitLen.offset + 1,
+      sigBitLen.offset + sigBitLen.length,
+    );
+
     return crypto.verify(
       "sha384",
       tbsBytes,
@@ -408,6 +414,50 @@ function verifyCrlSignature(crlDer: Buffer, chainPem: string): boolean {
   }
 }
 
+/**
+ * Compare the CRL's issuer Name to the ARK's subject Name structurally
+ * (parse both with asn1js and re-encode to canonical DER, then byte-equal).
+ *
+ * CRL: outer SEQUENCE → tbsCertList → optional version (INTEGER) → signature
+ *      AlgorithmIdentifier (SEQUENCE) → issuer Name (SEQUENCE) ← here.
+ * Cert: outer SEQUENCE → tbsCertificate → optional [0] version → serialNumber
+ *      → signature → issuer → validity → subject Name (SEQUENCE) ← here.
+ */
+function crlIssuerEqualsArkSubject(crlDer: Buffer, arkDer: Buffer): boolean {
+  const crlParsed = fromBER(crlDer);
+  const arkParsed = fromBER(arkDer);
+  if (crlParsed.offset === -1 || arkParsed.offset === -1) return false;
+
+  const certList = crlParsed.result;
+  if (!(certList instanceof Sequence)) return false;
+  const tbsCertList = certList.valueBlock.value[0];
+  if (!(tbsCertList instanceof Sequence)) return false;
+  const crlChildren = tbsCertList.valueBlock.value;
+  let i = 0;
+  if (crlChildren[i] instanceof Integer) i++; // optional version
+  i++; // signature AlgorithmIdentifier
+  const crlIssuer = crlChildren[i];
+  if (!(crlIssuer instanceof Sequence)) return false;
+
+  const cert = arkParsed.result;
+  if (!(cert instanceof Sequence)) return false;
+  const tbsCert = cert.valueBlock.value[0];
+  if (!(tbsCert instanceof Sequence)) return false;
+  const certChildren = tbsCert.valueBlock.value;
+  let j = 0;
+  // [0] version is context-specific tagged
+  const v: any = certChildren[j];
+  if (v?.idBlock?.tagClass === 3 && v?.idBlock?.tagNumber === 0) j++;
+  j += 3; // serialNumber, signature, issuer
+  j++; // validity
+  const arkSubject = certChildren[j];
+  if (!(arkSubject instanceof Sequence)) return false;
+
+  const a = Buffer.from(crlIssuer.toBER());
+  const b = Buffer.from(arkSubject.toBER());
+  return Buffer.compare(a, b) === 0;
+}
+
 function parseDerLength(buf: Buffer, offset: number): { length: number; offset: number } {
   let len = buf[offset]!;
   offset += 1;
@@ -420,22 +470,58 @@ function parseDerLength(buf: Buffer, offset: number): { length: number; offset: 
   return { length: actualLen, offset };
 }
 
-// AMD VCEK custom OIDs (1.3.6.1.4.1.3704.1.*), DER-encoded as they appear in
-// the cert (`06 LL <oid bytes>`). These name the cert's chip and TCB binding.
-const AMD_OID_HWID = Buffer.from("06092B060104019C780104", "hex");
-const AMD_OID_BL = Buffer.from("060A2B060104019C78010301", "hex");
-const AMD_OID_TEE = Buffer.from("060A2B060104019C78010302", "hex");
-const AMD_OID_SNP = Buffer.from("060A2B060104019C78010303", "hex");
-const AMD_OID_UC = Buffer.from("060A2B060104019C78010308", "hex");
+// AMD VCEK custom OIDs (1.3.6.1.4.1.3704.1.*) that name the cert's chip and
+// TCB binding.
+const AMD_OID_HWID = "1.3.6.1.4.1.3704.1.4";
+const AMD_OID_BL = "1.3.6.1.4.1.3704.1.3.1";
+const AMD_OID_TEE = "1.3.6.1.4.1.3704.1.3.2";
+const AMD_OID_SNP = "1.3.6.1.4.1.3704.1.3.3";
+const AMD_OID_UC = "1.3.6.1.4.1.3704.1.3.8";
 
-/** Find an AMD extension by OID and return the OCTET STRING contents. */
-function findAmdExt(certDer: Buffer, oidBytes: Buffer): Buffer | null {
-  const idx = certDer.indexOf(oidBytes);
-  if (idx < 0) return null;
-  const cur = idx + oidBytes.length;
-  if (certDer[cur] !== 0x04) return null; // must be OCTET STRING
-  const len = parseDerLength(certDer, cur + 1);
-  return certDer.subarray(len.offset, len.offset + len.length);
+/**
+ * Get the OCTET STRING contents of an X.509 extension by OID, walking the
+ * cert structurally (rather than searching for OID byte sequences in the
+ * raw DER, which can collide with serial numbers or signature bytes).
+ *
+ * Cert structure: outer SEQUENCE → tbsCertificate SEQUENCE → ...,
+ * extensions [3] EXPLICIT SEQUENCE OF Extension.
+ * Extension structure: SEQUENCE { OID, [BOOLEAN critical], OCTET STRING }.
+ */
+function getCertExtensionContents(certDer: Buffer, oidString: string): Buffer | null {
+  const parsed = fromBER(certDer);
+  if (parsed.offset === -1) return null;
+  const cert = parsed.result;
+  if (!(cert instanceof Sequence)) return null;
+  const tbs = cert.valueBlock.value[0];
+  if (!(tbs instanceof Sequence)) return null;
+
+  // Find [3] EXPLICIT extensions tag (context-specific class=3, tagNumber=3)
+  let extsContainer: any = null;
+  for (const child of tbs.valueBlock.value) {
+    const idBlock: any = (child as any).idBlock;
+    if (idBlock?.tagClass === 3 && idBlock?.tagNumber === 3) {
+      extsContainer = child;
+      break;
+    }
+  }
+  if (!extsContainer) return null;
+
+  // Inside the [3] tag is the SEQUENCE OF Extension
+  const extsSeq = extsContainer.valueBlock.value[0];
+  if (!(extsSeq instanceof Sequence)) return null;
+
+  for (const ext of extsSeq.valueBlock.value) {
+    if (!(ext instanceof Sequence)) continue;
+    const children = ext.valueBlock.value;
+    const oidEl = children[0];
+    if (!(oidEl instanceof ObjectIdentifier)) continue;
+    if (oidEl.valueBlock.toString() !== oidString) continue;
+    // Last child is the OCTET STRING (skip optional BOOLEAN critical)
+    const last = children[children.length - 1];
+    if (!(last instanceof OctetString)) return null;
+    return Buffer.from(last.valueBlock.valueHexView);
+  }
+  return null;
 }
 
 /** Read the inner ASN.1 INTEGER inside an AMD TCB extension's OCTET STRING. */
@@ -458,33 +544,40 @@ function readAmdTcbInt(octetContents: Buffer): number | null {
  * check, we trust AMD's own cryptographic binding directly — the cert
  * extensions say "this VCEK is for chip X at TCB Y", and we verify that
  * matches the chip_id + reported_tcb in the attested report.
+ *
+ * Returns false on any parse error so a malformed/corrupt VCEK cleanly
+ * surfaces as `valid=false` instead of throwing.
  */
 function vcekMatchesReport(
   vcekDer: Buffer,
   rpt: ReturnType<typeof parseReport>,
 ): boolean {
-  const hwid = findAmdExt(vcekDer, AMD_OID_HWID);
-  if (!hwid || hwid.length !== 64) return false;
-  if (Buffer.compare(hwid, rpt.chipId) !== 0) return false;
+  try {
+    const hwid = getCertExtensionContents(vcekDer, AMD_OID_HWID);
+    if (!hwid || hwid.length !== 64) return false;
+    if (Buffer.compare(hwid, rpt.chipId) !== 0) return false;
 
-  const blOctets = findAmdExt(vcekDer, AMD_OID_BL);
-  const teeOctets = findAmdExt(vcekDer, AMD_OID_TEE);
-  const snpOctets = findAmdExt(vcekDer, AMD_OID_SNP);
-  const ucOctets = findAmdExt(vcekDer, AMD_OID_UC);
-  if (!blOctets || !teeOctets || !snpOctets || !ucOctets) return false;
+    const blOctets = getCertExtensionContents(vcekDer, AMD_OID_BL);
+    const teeOctets = getCertExtensionContents(vcekDer, AMD_OID_TEE);
+    const snpOctets = getCertExtensionContents(vcekDer, AMD_OID_SNP);
+    const ucOctets = getCertExtensionContents(vcekDer, AMD_OID_UC);
+    if (!blOctets || !teeOctets || !snpOctets || !ucOctets) return false;
 
-  const bl = readAmdTcbInt(blOctets);
-  const tee = readAmdTcbInt(teeOctets);
-  const snp = readAmdTcbInt(snpOctets);
-  const uc = readAmdTcbInt(ucOctets);
-  if (bl === null || tee === null || snp === null || uc === null) return false;
+    const bl = readAmdTcbInt(blOctets);
+    const tee = readAmdTcbInt(teeOctets);
+    const snp = readAmdTcbInt(snpOctets);
+    const uc = readAmdTcbInt(ucOctets);
+    if (bl === null || tee === null || snp === null || uc === null) return false;
 
-  return (
-    bl === rpt.reportedTcb.bootLoader &&
-    tee === rpt.reportedTcb.tee &&
-    snp === rpt.reportedTcb.snp &&
-    uc === rpt.reportedTcb.microcode
-  );
+    return (
+      bl === rpt.reportedTcb.bootLoader &&
+      tee === rpt.reportedTcb.tee &&
+      snp === rpt.reportedTcb.snp &&
+      uc === rpt.reportedTcb.microcode
+    );
+  } catch {
+    return false;
+  }
 }
 
 /** Return true if the VCEK is NOT in the CRL (i.e. not revoked). */
