@@ -2,6 +2,12 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.9.1] — 2026-05-12
+
+### Changed
+
+- **SecretVM artifacts registry refresh.** TDX: adds `small/medium/large × dev/prod` rows for `v0.0.27` and `large × dev-gcp/prod-gcp` rows for `v0.0.26-beta.1`. SEV: adds `v0.0.27` dev + prod entries. No code changes; consumers on 0.9.0 will fail `workload_binding_verified` against VMs running these newer builds.
+
 ## [0.9.0] — 2026-04-27
 
 ### Added
