@@ -3,9 +3,11 @@
 
 import json
 import sys
+import subprocess
+import re
+import urllib.request
 from dataclasses import asdict
 from secretvm.verify import check_secret_vm
-
 
 def _get_opt(name: str):
     if name in sys.argv:
@@ -14,6 +16,26 @@ def _get_opt(name: str):
             return sys.argv[idx + 1]
     return None
 
+def get_cert_dns(ip, port=29343):
+    try:
+        cmd1 = subprocess.Popen(
+            ["openssl", "s_client", "-connect", f"{ip}:{port}", "-servername", "x"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        cmd1.stdin.write(b"\n")
+        cmd1.stdin.close()
+        cmd2 = subprocess.Popen(
+            ["openssl", "x509", "-noout", "-ext", "subjectAltName"],
+            stdin=cmd1.stdout, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        )
+        out, _ = cmd2.communicate(timeout=5)
+        
+        match = re.search(r'DNS:([^,\s]+)', out.decode('utf-8'))
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return None
 
 def main():
     if "--version" in sys.argv or "-V" in sys.argv:
@@ -27,6 +49,7 @@ def main():
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--strict] [--proof-of-cloud] [--show-compose] [--docker-files <tar> | --docker-files-sha256 <hex>] [--version|-V]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
+        print(f"  e.g. {sys.argv[0]} --k8scluster my-vm.scrtlabs.com")
         print(f"  Default output is the per-check PASS/FAIL breakdown. Use --json for")
         print(f"  minimal JSON (no report fields), --raw for full JSON, or --verbose for")
         print(f"  the text breakdown with parsed CPU/GPU/proof-of-cloud quotes.")
@@ -44,9 +67,7 @@ def main():
         print(f"  --version / -V prints secretvm-verify version and exits.")
         sys.exit(1)
 
-    url = sys.argv[1]
     product = _get_opt("--product") or ""
-
     raw = "--raw" in sys.argv
     json_out = "--json" in sys.argv
     verbose = "--verbose" in sys.argv or "-v" in sys.argv
@@ -62,8 +83,101 @@ def main():
         with open(docker_files_path, "rb") as f:
             docker_files_bytes = f.read()
 
+    if "--k8scluster" in sys.argv:
+        master_domain = _get_opt("--k8scluster")
+        if not master_domain:
+            print("Usage: check_vm.py --k8scluster <master-domain>")
+            sys.exit(1)
+
+        discovery_port = 30081
+        print(f"🔍 Fetching cluster nodes from {master_domain}:{discovery_port}...")
+        try:
+            req = urllib.request.Request(f"http://{master_domain}:{discovery_port}/nodes.csv")
+            with urllib.request.urlopen(req, timeout=10) as response:
+                nodes_csv = response.read().decode('utf-8')
+        except Exception as e:
+            print("❌ Failed to retrieve node list or list is empty.")
+            sys.exit(1)
+
+        lines = [line.strip() for line in nodes_csv.splitlines() if line.strip()]
+        if not lines:
+            print("❌ Failed to retrieve node list or list is empty.")
+            sys.exit(1)
+
+        print("📋 Processing Cluster Nodes...")
+        print("-" * 56)
+
+        all_success = True
+        for line in lines:
+            parts = line.split(",")
+            node_name = parts[0].strip()
+            ip_target = parts[1].strip() if len(parts) > 1 else ""
+            
+            if not node_name:
+                continue
+
+            verify_target = ""
+
+            if node_name == "k3s-server":
+                verify_target = master_domain
+            elif ip_target:
+                cert_dns = get_cert_dns(ip_target)
+                if cert_dns:
+                    verify_target = cert_dns
+                else:
+                    print(f"❌ FAILED to figure out FQDN for {node_name}")
+                    all_success = False
+                    continue
+
+            print(f"🛡️  Attesting Node: {node_name}")
+            print(f"    Node IP: {ip_target}")
+            print(f"    Domain:  {verify_target}\n")
+
+            try:
+                # Pass into the existing verification check
+                node_result = check_secret_vm(
+                    f"https://{verify_target}",
+                    product=product,
+                    reload_amd_kds=reload_amd_kds,
+                    check_proof_of_cloud=check_poc,
+                    docker_files=docker_files_bytes,
+                    docker_files_sha256=docker_files_sha256,
+                    strict=strict,
+                )
+
+                print("Checks:")
+                for name, passed in node_result.checks.items():
+                    if name == "gpu_quote_fetched" and not passed:
+                        print(f"  {'gpu:':<35} GPU not present")
+                        continue
+                    status = "PASS" if passed else "FAIL"
+                    print(f"  {name + ':':<35} {status}")
+
+                if node_result.errors:
+                    print("\nErrors:")
+                    for err in node_result.errors:
+                        print(f"  - {err}")
+
+                if node_result.valid:
+                    print(f"\n✅ Verification SUCCESSFUL for {node_name}")
+                else:
+                    print(f"\n❌ Verification FAILED for {node_name}")
+                    all_success = False
+
+            except Exception as e:
+                print(f"❌ Verification FAILED for {node_name} (Error: {e})")
+                all_success = False
+            
+            print("-" * 56)
+
+        print("🎉 Cluster attestation complete.")
+        sys.exit(0 if all_success else 1)
+
+    url = sys.argv[1]
+
     if not (raw or json_out):
         print(f"Verifying {url}\n")
+    
     result = check_secret_vm(
         url,
         product=product,

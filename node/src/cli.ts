@@ -2,6 +2,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import * as tls from "node:tls";
 import {
   checkSecretVm,
   checkCpuAttestation,
@@ -19,6 +20,31 @@ import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
 import { extractDockerCompose } from "./vm.js";
 import { orderChecks } from "./types.js";
 import type { AttestationResult } from "./types.js";
+
+async function getCertDns(ip: string, port: number): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const socket = tls.connect({
+      host: ip,
+      port: port,
+      rejectUnauthorized: false,
+      servername: "x",
+    }, () => {
+      const cert = socket.getPeerCertificate();
+      socket.end();
+      if (cert && cert.subjectaltname) {
+        // extract the first DNS name
+        const dnsNames = cert.subjectaltname.split(', ')
+          .filter(s => s.startsWith('DNS:'))
+          .map(s => s.replace('DNS:', ''));
+        resolve(dnsNames[0]);
+      } else {
+        resolve(undefined);
+      }
+    });
+    socket.on('error', () => resolve(undefined));
+    socket.setTimeout(5000, () => { socket.destroy(); resolve(undefined); });
+  });
+}
 
 async function mergeProofOfCloud(
   result: AttestationResult,
@@ -148,6 +174,7 @@ Commands:
                                     Optionally pass --docker-files (the archive baked into
                                     the VM) or --docker-files-sha256 (its hex digest) so the
                                     workload check includes the docker-files measurement.
+  --k8scluster <master-domain>      Attest all nodes in a cluster by discovering them from the master domain
   --cpu <file|--vm url>             Verify a CPU quote (auto-detect TDX vs SEV-SNP)
   --tdx <file|--vm url>             Verify an Intel TDX quote
   --sev <file|--vm url>             Verify an AMD SEV-SNP report
@@ -186,6 +213,7 @@ Options:
 
 Examples:
   secretvm-verify --secretvm my-vm.example.com
+  secretvm-verify --k8scluster my-vm.scrtlabs.com
   secretvm-verify --secretvm my-vm.example.com --docker-files-sha256 <hex>
   secretvm-verify --tdx cpu_quote.txt
   secretvm-verify --tdx --vm my-vm.example.com
@@ -424,6 +452,96 @@ try {
     process.stdout.write(composeData);
     if (!composeData.endsWith("\n")) process.stdout.write("\n");
     process.exit(0);
+  } else if (getFlag("--k8scluster")) {
+    const masterDomain = getFlagValue("--k8scluster");
+    if (!masterDomain) {
+      console.log(USAGE);
+      process.exit(1);
+    }
+
+    const discoveryPort = 30081;
+    console.log(`🔍 Fetching cluster nodes from ${masterDomain}:${discoveryPort}...`);
+    
+    let nodesCsv = "";
+    try {
+      const resp = await fetch(`http://${masterDomain}:${discoveryPort}/nodes.csv`);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      nodesCsv = await resp.text();
+    } catch (e) {
+      console.log("❌ Failed to retrieve node list or list is empty.");
+      process.exit(1);
+    }
+
+    const lines = nodesCsv.split('\n').map(l => l.trim()).filter(Boolean);
+    if (lines.length === 0) {
+      console.log("❌ Failed to retrieve node list or list is empty.");
+      process.exit(1);
+    }
+
+    console.log("📋 Processing Cluster Nodes...");
+    console.log("--------------------------------------------------------");
+
+    let allSuccess = true;
+
+    for (const line of lines) {
+      const parts = line.split(',');
+      const nodeName = parts[0]?.trim();
+      const ipTarget = parts[1]?.trim();
+      
+      if (!nodeName) continue;
+
+      let verifyTarget = "";
+
+      if (nodeName === "k3s-server") {
+        verifyTarget = masterDomain;
+      } else if (ipTarget) {
+        const certDns = await getCertDns(ipTarget, 29343);
+        if (certDns) {
+          verifyTarget = certDns;
+        } else {
+          console.log(`❌ FAILED to figure out FQDN for ${nodeName}`);
+          allSuccess = false;
+          continue;
+        }
+      }
+
+      console.log(`🛡️  Attesting Node: ${nodeName}`);
+      console.log(`    Node IP: ${ipTarget}`);
+      console.log(`    Domain:  ${verifyTarget}\n`);
+
+      try {
+        const nodeResult = await checkSecretVm(`https://${verifyTarget}`, product, reloadAmdKds, checkPoc, dockerFilesInput, strict);
+        
+        console.log("Checks:");
+        for (const [name, passed] of Object.entries(nodeResult.checks)) {
+          if (name === "gpu_quote_fetched" && !passed) {
+            console.log(`  ${"gpu:".padEnd(35)} GPU not present`);
+            continue;
+          }
+          const status = passed ? "PASS" : "FAIL";
+          console.log(`  ${(name + ":").padEnd(35)} ${status}`);
+        }
+
+        if (nodeResult.errors.length > 0) {
+          console.log("\nErrors:");
+          for (const err of nodeResult.errors) console.log(`  - ${err}`);
+        }
+
+        if (nodeResult.valid) {
+          console.log(`\n✅ Verification SUCCESSFUL for ${nodeName}`);
+        } else {
+          console.log(`\n❌ Verification FAILED for ${nodeName}`);
+          allSuccess = false;
+        }
+      } catch (err: any) {
+        console.log(`❌ Verification FAILED for ${nodeName} (Error: ${err.message})`);
+        allSuccess = false;
+      }
+      console.log("--------------------------------------------------------");
+    }
+
+    console.log("🎉 Cluster attestation complete.");
+    process.exit(allSuccess ? 0 : 1);
   } else {
     // Legacy: bare URL defaults to --secretvm
     const url = getPositional();
