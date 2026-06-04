@@ -5,6 +5,7 @@ import {
     findMatchingArtifacts,
     pickNewestVersion,
     loadSevRegistry,
+    refreshRegistryFromGitHub,
     type TdxArtifactEntry,
     type SevArtifactEntry,
 } from "./artifacts.js";
@@ -147,8 +148,14 @@ export async function verifyTdxWorkload(
         return { status: "not_authentic" };
     }
 
-    const candidates = findMatchingArtifacts(mrtd, rtmr0, rtmr1, rtmr2);
+    let candidates = findMatchingArtifacts(mrtd, rtmr0, rtmr1, rtmr2);
 
+    if (candidates.length === 0) {
+        process.stderr.write("Registry miss — fetching latest artifacts from GitHub...\n");
+        if (await refreshRegistryFromGitHub()) {
+            candidates = findMatchingArtifacts(mrtd, rtmr0, rtmr1, rtmr2);
+        }
+    }
     if (candidates.length === 0) {
         return { status: "not_authentic" };
     }
@@ -275,88 +282,102 @@ export async function verifySevWorkload(
     // raw SHA256 — matches jeeves compute_file_hash() (no YAML normalization)
     const composeHash = createHash("sha256").update(compose, "utf8").digest("hex");
 
-    if (!family) {
-        // family_id not set — brute-force all registry entries and vcpu counts
-        for (const entry of registry) {
-            for (const [templateName, vcpus] of Object.entries(VCPU_MAP)) {
-                const prefix = entry.cmdline_extra
-                    ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
-                    : `console=ttyS0 loglevel=7`;
-                let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
-                if (dockerFilesSha256) cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
-                try {
-                    if (calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement) {
-                        return {
-                            status: "authentic_match",
-                            template_name: templateName,
-                            vm_type: entry.vm_type,
-                            artifacts_ver: entry.artifacts_ver,
-                            env: entry.vm_type,
-                        };
-                    }
-                } catch { /* skip */ }
+    // Inner helper: try to match quote against a given registry snapshot.
+    // Returns WorkloadResult on any definitive answer, null when no entry matched
+    // (i.e. the registry may simply be stale — caller can refresh and retry).
+    function matchRegistry(reg: SevArtifactEntry[]): WorkloadResult | null {
+        if (!family) {
+            // family_id not set — brute-force all registry entries and vcpu counts
+            for (const entry of reg) {
+                for (const [templateName, vcpus] of Object.entries(VCPU_MAP)) {
+                    const prefix = entry.cmdline_extra
+                        ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
+                        : `console=ttyS0 loglevel=7`;
+                    let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+                    if (dockerFilesSha256) cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+                    try {
+                        if (calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement) {
+                            return {
+                                status: "authentic_match",
+                                template_name: templateName,
+                                vm_type: entry.vm_type,
+                                artifacts_ver: entry.artifacts_ver,
+                                env: entry.vm_type,
+                            };
+                        }
+                    } catch { /* skip */ }
+                }
+            }
+            return null;
+        }
+
+        const { vmType, templateName, vcpus } = family;
+        const candidates = reg.filter((e) => e.vm_type === vmType);
+        const versionEntries = imageId ? candidates.filter((e) => e.artifacts_ver === imageId) : [];
+
+        function tryEntry(entry: SevArtifactEntry): boolean {
+            const prefix = entry.cmdline_extra
+                ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
+                : `console=ttyS0 loglevel=7`;
+            let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+            if (dockerFilesSha256) {
+                cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+            }
+            try {
+                return calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement;
+            } catch {
+                return false;
             }
         }
-        return { status: "not_authentic" };
-    }
 
-    const { vmType, templateName, vcpus } = family;
-
-    const candidates = registry.filter((e) => e.vm_type === vmType);
-    const versionEntries = imageId ? candidates.filter((e) => e.artifacts_ver === imageId) : [];
-
-    function tryEntry(entry: SevArtifactEntry): boolean {
-        const prefix = entry.cmdline_extra
-            ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
-            : `console=ttyS0 loglevel=7`;
-        let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
-        if (dockerFilesSha256) {
-            cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+        // Try version-specific entries first
+        for (const entry of versionEntries) {
+            if (tryEntry(entry)) {
+                return {
+                    status: "authentic_match",
+                    template_name: templateName,
+                    vm_type: templateName,
+                    artifacts_ver: entry.artifacts_ver,
+                    env: vmType,
+                };
+            }
         }
-        try {
-            return calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement;
-        } catch {
-            return false;
-        }
-    }
 
-    // Try version-specific entries first
-    for (const entry of versionEntries) {
-        if (tryEntry(entry)) {
+        // Fallback: other entries for this vm_type
+        for (const entry of candidates) {
+            if (imageId && entry.artifacts_ver === imageId) continue; // already tried above
+            if (tryEntry(entry)) {
+                return {
+                    status: "authentic_match",
+                    template_name: templateName,
+                    vm_type: templateName,
+                    artifacts_ver: entry.artifacts_ver,
+                    env: vmType,
+                };
+            }
+        }
+
+        // No compose match. If the version is in the registry the VM is authentic
+        // but the provided compose doesn't match the measurement.
+        if (versionEntries.length > 0) {
             return {
-                status: "authentic_match",
+                status: "authentic_mismatch",
                 template_name: templateName,
                 vm_type: templateName,
-                artifacts_ver: entry.artifacts_ver,
+                artifacts_ver: imageId,
                 env: vmType,
             };
         }
+        return null;
     }
 
-    // Fallback: other entries for this vm_type
-    for (const entry of candidates) {
-        if (imageId && entry.artifacts_ver === imageId) continue; // already tried above
-        if (tryEntry(entry)) {
-            return {
-                status: "authentic_match",
-                template_name: templateName,
-                vm_type: templateName,
-                artifacts_ver: entry.artifacts_ver,
-                env: vmType,
-            };
-        }
-    }
+    const firstTry = matchRegistry(registry);
+    if (firstTry !== null) return firstTry;
 
-    // No compose match. If the version is in the registry the VM is authentic
-    // but the provided compose doesn't match the measurement.
-    if (versionEntries.length > 0) {
-        return {
-            status: "authentic_mismatch",
-            template_name: templateName,
-            vm_type: templateName,
-            artifacts_ver: imageId,
-            env: vmType,
-        };
+    process.stderr.write("Registry miss — fetching latest artifacts from GitHub...\n");
+    if (await refreshRegistryFromGitHub()) {
+        const secondTry = matchRegistry(loadSevRegistry());
+        if (secondTry !== null) return secondTry;
     }
     return { status: "not_authentic" };
 }

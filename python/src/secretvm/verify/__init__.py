@@ -57,6 +57,8 @@ from .workload import (
     verify_sev_workload,
     verify_workload,
     format_workload_result,
+    refresh_registry_from_github,
+    reset_registry_caches,
 )
 
 # ERC-8004 Agent verification

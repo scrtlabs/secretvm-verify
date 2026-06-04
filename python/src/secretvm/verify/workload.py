@@ -206,6 +206,11 @@ def verify_tdx_workload(
 
     candidates = _find_matching_artifacts(mrtd, rtmr0, rtmr1, rtmr2)
     if not candidates:
+        import sys
+        print("Registry miss \u2014 fetching latest artifacts from GitHub...", file=sys.stderr)
+        if refresh_registry_from_github():
+            candidates = _find_matching_artifacts(mrtd, rtmr0, rtmr1, rtmr2)
+    if not candidates:
         return WorkloadResult(status="not_authentic")
 
     best = _pick_newest_version(candidates)
@@ -433,6 +438,43 @@ def _load_sev_registry() -> list:
     return _sev_registry_cache
 
 
+# ---------------------------------------------------------------------------
+# Registry refresh
+# ---------------------------------------------------------------------------
+
+_REGISTRY_GITHUB_RAW = (
+    "https://raw.githubusercontent.com/scrtlabs/secretvm-verify/main/artifacts_registry"
+)
+
+
+def reset_registry_caches() -> None:
+    """Clear in-memory registry caches so they are reloaded from disk on next access."""
+    global _tdx_registry_cache, _sev_registry_cache
+    _tdx_registry_cache = None
+    _sev_registry_cache = None
+
+
+def refresh_registry_from_github() -> bool:
+    """Fetch the latest registry files from GitHub and overwrite the local copies.
+
+    Returns True on success, False on any error.
+    """
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"{_REGISTRY_GITHUB_RAW}/sev.json") as resp:
+            sev_text = resp.read().decode("utf-8")
+        with urllib.request.urlopen(f"{_REGISTRY_GITHUB_RAW}/tdx.csv") as resp:
+            tdx_text = resp.read().decode("utf-8")
+        json.loads(sev_text)  # validate JSON before overwriting
+        data_dir = Path(__file__).parent / "data"
+        (data_dir / "sev.json").write_text(sev_text, encoding="utf-8")
+        (data_dir / "tdx.csv").write_text(tdx_text, encoding="utf-8")
+        reset_registry_caches()
+        return True
+    except Exception:
+        return False
+
+
 def _parse_sev_family_id(family_id_bytes: bytes) -> Optional[dict]:
     """Parse family_id field from SNP report -> {vm_type, template_name, vcpus}.
 
@@ -528,8 +570,6 @@ def verify_sev_workload(
     # raw SHA256 of compose content (no YAML normalization -- matches jeeves behaviour)
     compose_hash = hashlib.sha256(docker_compose_yaml.encode("utf-8")).hexdigest()
 
-    candidates = [e for e in registry if e.get("vm_type") == vm_type]
-
     def try_entry(entry: dict) -> bool:
         rh = entry.get("rootfs_hash", "")
         cmdline = f"console=ttyS0 loglevel=7 docker_compose_hash={compose_hash} rootfs_hash={rh}"
@@ -540,43 +580,53 @@ def verify_sev_workload(
         except Exception:
             return False
 
-    version_entries = [e for e in candidates if e.get("artifacts_ver") == image_id] if image_id else []
+    def match_registry(reg: list) -> Optional[WorkloadResult]:
+        cands = [e for e in reg if e.get("vm_type") == vm_type]
+        ver_entries = [e for e in cands if e.get("artifacts_ver") == image_id] if image_id else []
 
-    # Try version-specific entries first (fast path when image_id is set)
-    for entry in version_entries:
-        if try_entry(entry):
+        for entry in ver_entries:
+            if try_entry(entry):
+                return WorkloadResult(
+                    status="authentic_match",
+                    template_name=template_name,
+                    vm_type=template_name,
+                    artifacts_ver=entry["artifacts_ver"],
+                    env=vm_type,
+                )
+
+        for entry in cands:
+            if image_id and entry.get("artifacts_ver") == image_id:
+                continue
+            if try_entry(entry):
+                return WorkloadResult(
+                    status="authentic_match",
+                    template_name=template_name,
+                    vm_type=template_name,
+                    artifacts_ver=entry.get("artifacts_ver", ""),
+                    env=vm_type,
+                )
+
+        if ver_entries:
+            best = ver_entries[0]
             return WorkloadResult(
-                status="authentic_match",
+                status="authentic_mismatch",
                 template_name=template_name,
                 vm_type=template_name,
-                artifacts_ver=entry["artifacts_ver"],
+                artifacts_ver=best.get("artifacts_ver"),
                 env=vm_type,
             )
+        return None  # no match — may be a registry miss
 
-    # Fallback: try remaining entries for this vm_type
-    for entry in candidates:
-        if image_id and entry.get("artifacts_ver") == image_id:
-            continue  # already tried above
-        if try_entry(entry):
-            return WorkloadResult(
-                status="authentic_match",
-                template_name=template_name,
-                vm_type=template_name,
-                artifacts_ver=entry.get("artifacts_ver", ""),
-                env=vm_type,
-            )
+    first_try = match_registry(registry)
+    if first_try is not None:
+        return first_try
 
-    # No compose match. If the version is in the registry the VM is authentic
-    # but the provided compose doesn't match the measurement.
-    if version_entries:
-        best = version_entries[0]
-        return WorkloadResult(
-            status="authentic_mismatch",
-            template_name=template_name,
-            vm_type=template_name,
-            artifacts_ver=best.get("artifacts_ver"),
-            env=vm_type,
-        )
+    import sys
+    print("Registry miss \u2014 fetching latest artifacts from GitHub...", file=sys.stderr)
+    if refresh_registry_from_github():
+        second_try = match_registry(_load_sev_registry())
+        if second_try is not None:
+            return second_try
     return WorkloadResult(status="not_authentic")
 
 

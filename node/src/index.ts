@@ -20,6 +20,8 @@ export {
     findMatchingArtifacts,
     pickNewestVersion,
     resolveVersion,
+    refreshRegistryFromGitHub,
+    resetRegistryCaches,
 } from "./artifacts.js";
 export type { TdxArtifactEntry } from "./artifacts.js";
 export { resolveAgent, verifyAgent, checkAgent } from "./agent.js";

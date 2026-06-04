@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { join, dirname } from "node:path";
@@ -153,4 +153,37 @@ export function loadSevRegistry(): SevArtifactEntry[] {
     const content = readFileSync(sevJsonPath(), "utf8");
     _sevRegistry = JSON.parse(content) as SevArtifactEntry[];
     return _sevRegistry;
+}
+
+// ---------------------------------------------------------------------------
+// GitHub registry refresh
+// ---------------------------------------------------------------------------
+
+const REGISTRY_GITHUB_RAW =
+    "https://raw.githubusercontent.com/scrtlabs/secretvm-verify/main/artifacts_registry";
+
+export function resetRegistryCaches(): void {
+    _registry = null;
+    _sevRegistry = null;
+}
+
+export async function refreshRegistryFromGitHub(): Promise<boolean> {
+    try {
+        const [sevResp, tdxResp] = await Promise.all([
+            fetch(`${REGISTRY_GITHUB_RAW}/sev.json`),
+            fetch(`${REGISTRY_GITHUB_RAW}/tdx.csv`),
+        ]);
+        if (!sevResp.ok || !tdxResp.ok) return false;
+        const [sevJson, tdxCsv] = await Promise.all([
+            sevResp.text(),
+            tdxResp.text(),
+        ]);
+        JSON.parse(sevJson); // validate before writing
+        writeFileSync(sevJsonPath(), sevJson, "utf8");
+        writeFileSync(csvPath(), tdxCsv, "utf8");
+        resetRegistryCaches();
+        return true;
+    } catch {
+        return false;
+    }
 }
