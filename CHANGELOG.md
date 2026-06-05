@@ -2,6 +2,16 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.9.2] — 2026-05-27
+
+### Added
+
+- **Auto-refresh of artifact registry on miss.** When `verifyTdxWorkload` / `verifySevWorkload` (Node) or `verify_tdx_workload` / `verify_sev_workload` (Python) can't find a matching registry entry, the package now fetches the latest `tdx.csv` + `sev.json` from `github.com/scrtlabs/secretvm-verify/main/artifacts_registry`, writes them into the installed package's `data/` dir, and retries the lookup. Lets the CLI verify VMs running builds that shipped after the user's installed package version. A "Registry miss — fetching latest artifacts from GitHub..." note is printed to stderr when the refresh fires. Exposed as `refreshRegistryFromGitHub()` / `refresh_registry_from_github()` for programmatic callers.
+
+### Changed
+
+- **SecretVM artifacts registry refresh.** TDX: adds rows for `v0.0.28` (small/medium/large × dev/prod) and `gcp-v0.0.27` (large × dev-gcp/prod-gcp). SEV: adds `v0.0.28` and `gcp-v0.0.27` entries. Consumers on 0.9.1 will fall back to the auto-refresh path against these newer VMs; bumping picks them up at install time.
+
 ## [0.9.1] — 2026-05-12
 
 ### Changed
