@@ -334,7 +334,11 @@ def _make_test_data(tls_hex="aa" * 32, nonce_hex="bb" * 32):
     poc_pass = AttestationResult(
         valid=True, attestation_type="PROOF-OF-CLOUD",
         checks={"proof_of_cloud_verified": True},
-        report={"proof_of_cloud": {"origin": "scrt", "proof_of_cloud": True}},
+        report={"proof_of_cloud": {
+            "whitelisted": True, "machine_id": "abc123", "revoked": False,
+            "revoked_at": None, "trust_server": "https://trust-server.scrtlabs.com",
+            "peers_tried": ["https://trust-server.scrtlabs.com"],
+        }},
     )
 
     return tls_fp, cpu_result, gpu_result, gpu_json, no_gpu_json, workload_pass, poc_pass
@@ -417,8 +421,13 @@ class TestSecretVm:
         poc_fail = AttestationResult(
             valid=False, attestation_type="PROOF-OF-CLOUD",
             checks={"proof_of_cloud_verified": False},
-            report={"proof_of_cloud": {"origin": None, "proof_of_cloud": False}},
-            errors=["Proof-of-cloud endpoint reported proof_of_cloud=false"],
+            report={"proof_of_cloud": {
+                "whitelisted": False, "machine_id": "abc123", "revoked": False,
+                "revoked_at": None, "trust_server": "https://trust-server.scrtlabs.com",
+                "peers_tried": ["https://trust-server.scrtlabs.com"],
+            }},
+            errors=["Machine abc123 is not whitelisted by trust-server peer "
+                    "https://trust-server.scrtlabs.com"],
         )
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
@@ -434,7 +443,7 @@ class TestSecretVm:
 
         assert result.valid is False
         assert result.checks["proof_of_cloud_verified"] is False
-        assert any("proof_of_cloud" in e.lower() or "Proof-of-cloud" in e for e in result.errors)
+        assert any("not whitelisted" in e for e in result.errors)
 
     def test_tls_binding_failure(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
@@ -762,3 +771,345 @@ class TestVerifySevWorkload:
         assert r.status == "authentic_mismatch"
         assert r.template_name == "small"
         assert r.artifacts_ver == "v0.0.25"
+
+# ---------------------------------------------------------------------------
+# Proof of Cloud (trust-server peers)
+# ---------------------------------------------------------------------------
+
+class TestProofOfCloud:
+    """Unit tests for the trust-server-peers ProofOfCloud module.
+
+    Peer POSTs are mocked via `secretvm.verify.proof_of_cloud.requests`; the
+    GitHub refresh fetch is mocked via
+    `secretvm.verify.proof_of_cloud.urllib.request.urlopen`. The module-level
+    peers memoization is reset before/after each test.
+    """
+
+    _POC = "secretvm.verify.proof_of_cloud"
+    BUNDLED = [
+        "https://trust-server.scrtlabs.com",
+        "https://trust-server.nillion.network",
+        "https://trust-server.iex.ec",
+    ]
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        from secretvm.verify import proof_of_cloud as poc
+        poc._reset_peers_cache()
+        yield
+        poc._reset_peers_cache()
+
+    @staticmethod
+    def _peer_response(status_code=200, json_body=None, raise_json=False):
+        resp = MagicMock()
+        resp.status_code = status_code
+        if raise_json:
+            resp.json.side_effect = ValueError("not json")
+        else:
+            resp.json.return_value = json_body
+        return resp
+
+    @staticmethod
+    def _urlopen_returning(text):
+        """Build a context-manager mock mimicking urllib.request.urlopen()."""
+        cm = MagicMock()
+        reader = MagicMock()
+        reader.read.return_value = text.encode("utf-8")
+        cm.__enter__.return_value = reader
+        cm.__exit__.return_value = False
+        return cm
+
+    def _patch_refresh_fail(self):
+        """Patch urlopen so the GitHub refresh fails -> bundled list is used."""
+        return patch(
+            f"{self._POC}.urllib.request.urlopen",
+            side_effect=OSError("github unreachable"),
+        )
+
+    # --- encoding-path tests -------------------------------------------------
+
+    def test_tdx_quote_passthrough_pass(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            captured["quote"] = json["quote"]
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "mach-1"}
+            )
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is True
+        assert result.checks["proof_of_cloud_verified"] is True
+        # TDX hex is sent unchanged (lowercased).
+        assert captured["quote"] == tdx_quote.strip().lower()
+        assert captured["url"] == "https://trust-server.scrtlabs.com/check_quote"
+        rep = result.report["proof_of_cloud"]
+        assert rep["whitelisted"] is True
+        assert rep["machine_id"] == "mach-1"
+        assert rep["revoked"] is False
+        assert rep["trust_server"] == "https://trust-server.scrtlabs.com"
+        assert rep["peers_tried"] == ["https://trust-server.scrtlabs.com"]
+
+    def test_sev_base64_converted_to_hex_pass(self, amd_quote):
+        import base64
+        from secretvm.verify import proof_of_cloud as poc
+        expected_hex = base64.b64decode(amd_quote.strip()).hex()
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["quote"] = json["quote"]
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "mach-sev"}
+            )
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(amd_quote)
+
+        assert result.valid is True
+        assert captured["quote"] == expected_hex
+        assert captured["quote"] == captured["quote"].lower()
+        assert result.report["proof_of_cloud"]["machine_id"] == "mach-sev"
+
+    def test_encode_error_makes_no_network_call(self):
+        from secretvm.verify import proof_of_cloud as poc
+        post = MagicMock()
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", post):
+            result = poc.check_proof_of_cloud("0400000081000000zz")
+
+        assert result.valid is False
+        assert result.checks["proof_of_cloud_verified"] is False
+        post.assert_not_called()
+        rep = result.report["proof_of_cloud"]
+        assert rep["peers_tried"] == []
+        assert rep["machine_id"] is None
+        assert rep["trust_server"] is None
+        assert any("encode quote" in e for e in result.errors)
+
+    # --- failover tests ------------------------------------------------------
+
+    def test_first_peer_fails_second_answers(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+        seen = []
+
+        def fake_post(url, json=None, timeout=None):
+            seen.append(url)
+            if "scrtlabs" in url:
+                raise requests_exc()  # network error on first peer
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "mach-2"}
+            )
+
+        def requests_exc():
+            return ConnectionError("boom")
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is True
+        rep = result.report["proof_of_cloud"]
+        # Verdict from second peer; peers_tried shows both.
+        assert rep["trust_server"] == "https://trust-server.nillion.network"
+        assert rep["peers_tried"] == [
+            "https://trust-server.scrtlabs.com",
+            "https://trust-server.nillion.network",
+        ]
+        assert rep["machine_id"] == "mach-2"
+
+    def test_all_peers_fail(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+
+        def fake_post(url, json=None, timeout=None):
+            if "scrtlabs" in url:
+                raise ConnectionError("down")
+            if "nillion" in url:
+                return self._peer_response(status_code=404, raise_json=True)
+            return self._peer_response(status_code=200, raise_json=True)
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is False
+        assert result.checks["proof_of_cloud_verified"] is False
+        rep = result.report["proof_of_cloud"]
+        assert rep["trust_server"] is None
+        assert rep["machine_id"] is None
+        assert rep["peers_tried"] == self.BUNDLED
+        # One error line per peer reason.
+        assert len(result.errors) == 3
+
+    def test_whitelisted_false_fails(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+
+        def fake_post(url, json=None, timeout=None):
+            return self._peer_response(
+                json_body={"whitelisted": False, "machine_id": "mach-x"}
+            )
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is False
+        rep = result.report["proof_of_cloud"]
+        assert rep["whitelisted"] is False
+        assert rep["revoked"] is False
+        assert rep["machine_id"] == "mach-x"
+        assert any("not whitelisted" in e and "mach-x" in e for e in result.errors)
+
+    def test_revoked_true_fails(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+
+        def fake_post(url, json=None, timeout=None):
+            return self._peer_response(json_body={
+                "whitelisted": False, "machine_id": "mach-r",
+                "revoked": True, "revoked_at": "2026-01-02T03:04:05Z",
+            })
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is False
+        rep = result.report["proof_of_cloud"]
+        assert rep["revoked"] is True
+        assert rep["revoked_at"] == "2026-01-02T03:04:05Z"
+        assert any("was revoked on 2026-01-02T03:04:05Z" in e for e in result.errors)
+
+    # --- refresh / peer-list tests ------------------------------------------
+
+    def test_refresh_success_uses_new_list(self, tdx_quote, tmp_path):
+        from secretvm.verify import proof_of_cloud as poc
+        new_list = "https://only-peer.example.com/\n# a comment\n"
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "mach-new"}
+            )
+
+        urlopen = patch(
+            f"{self._POC}.urllib.request.urlopen",
+            return_value=self._urlopen_returning(new_list),
+        )
+        # Redirect the best-effort persist to a temp file so we don't clobber
+        # the bundled copy.
+        write = patch.object(poc.Path, "write_text", lambda self, *a, **k: None)
+        with urlopen, write, \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is True
+        assert captured["url"] == "https://only-peer.example.com/check_quote"
+        assert result.report["proof_of_cloud"]["peers_tried"] == [
+            "https://only-peer.example.com"
+        ]
+
+    def test_refresh_failure_falls_back_to_bundled(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured.setdefault("urls", []).append(url)
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "mach-bundled"}
+            )
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is True
+        # First bundled peer was queried.
+        assert captured["urls"][0] == "https://trust-server.scrtlabs.com/check_quote"
+
+    def test_refresh_empty_body_falls_back_to_bundled(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+        captured = {}
+
+        def fake_post2(url, json=None, timeout=None):
+            captured["url"] = url
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "m"}
+            )
+
+        urlopen = patch(
+            f"{self._POC}.urllib.request.urlopen",
+            return_value=self._urlopen_returning("# only comments\n\n"),
+        )
+        with urlopen, patch(f"{self._POC}.requests.post", side_effect=fake_post2):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is True
+        # Empty refresh -> bundled list; first bundled peer queried.
+        assert captured["url"] == "https://trust-server.scrtlabs.com/check_quote"
+
+    def test_refresh_write_failure_still_uses_refreshed_list(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["url"] = url
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "m"}
+            )
+
+        def boom_write(self, *a, **k):
+            raise OSError("read-only filesystem")
+
+        urlopen = patch(
+            f"{self._POC}.urllib.request.urlopen",
+            return_value=self._urlopen_returning("https://refreshed.example.com\n"),
+        )
+        write = patch.object(poc.Path, "write_text", boom_write)
+        with urlopen, write, \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(tdx_quote)
+
+        assert result.valid is True
+        assert captured["url"] == "https://refreshed.example.com/check_quote"
+
+    def test_malformed_peer_line_dropped(self):
+        from secretvm.verify import proof_of_cloud as poc
+        text = (
+            "https://good.example.com/\n"
+            "http://insecure.example.com\n"   # non-https dropped
+            "not a url at all\n"              # no https scheme -> dropped
+            "# comment\n"
+            "\n"
+            "https://good2.example.com:8443/some/path?x=1\n"
+        )
+        peers = poc._parse_peers(text)
+        assert peers == [
+            "https://good.example.com",
+            "https://good2.example.com:8443",
+        ]
+
+    def test_peers_memoized_across_calls(self, tdx_quote):
+        from secretvm.verify import proof_of_cloud as poc
+
+        def fake_post(url, json=None, timeout=None):
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "m"}
+            )
+
+        urlopen = patch(
+            f"{self._POC}.urllib.request.urlopen",
+            side_effect=OSError("down"),
+        )
+        with urlopen as mock_urlopen, \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            poc.check_proof_of_cloud(tdx_quote)
+            poc.check_proof_of_cloud(tdx_quote)
+
+        # Refresh attempted only once for the whole process.
+        assert mock_urlopen.call_count == 1

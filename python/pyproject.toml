@@ -28,4 +28,4 @@ where = ["src"]
 namespaces = true
 
 [tool.setuptools.package-data]
-"secretvm.verify" = ["data/*.csv", "data/*.json"]
+"secretvm.verify" = ["data/*.csv", "data/*.json", "data/*.txt"]

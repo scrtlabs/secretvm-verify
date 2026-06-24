@@ -1,6 +1,6 @@
-import { describe, it, mock } from "node:test";
+import { describe, it, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -13,6 +13,7 @@ import {
   checkProofOfCloud,
 } from "./index.js";
 import type { AttestationResult } from "./types.js";
+import { resetPeersCacheForTests } from "./proofOfCloud.js";
 import { parseVmUrl } from "./vm.js";
 import { calculateRtmr3 } from "./rtmr.js";
 import { createHash } from "node:crypto";
@@ -402,97 +403,327 @@ describe("checkSecretVm", () => {
 describe("checkProofOfCloud", () => {
   const originalFetch = globalThis.fetch;
 
+  // The refresh-success path best-effort persists the fetched list to the
+  // bundled file. Save & restore it so tests don't clobber the committed copy.
+  const PEERS_FILE = join(__dirname, "..", "data", "trust_server_peers.txt");
+  let bundledBackup = "";
+  before(() => {
+    bundledBackup = readFileSync(PEERS_FILE, "utf8");
+  });
+  after(() => {
+    writeFileSync(PEERS_FILE, bundledBackup, "utf8");
+  });
+
+  // Bundled peers (node/data/trust_server_peers.txt):
+  //   https://trust-server.scrtlabs.com
+  //   https://trust-server.nillion.network
+  //   https://trust-server.iex.ec
+  const BUNDLED_FIRST = "https://trust-server.scrtlabs.com";
+  const BUNDLED_SECOND = "https://trust-server.nillion.network";
+
+  // A TDX quote is hex with version=4 (uint16LE@0) and tee_type=0x81 (uint32LE@4).
+  // 0x0004 LE => "0400", reserved "0000", 0x00000081 LE => "81000000".
+  const TDX_QUOTE = "0400000081000000" + "ab".repeat(16);
+
+  // Build a valid SEV-SNP buffer: version=2 (uint32LE@0), sig_algo=1 (uint32LE@0x34),
+  // length >= 0x38.
+  function makeSevBase64(): string {
+    const buf = Buffer.alloc(0x40, 0);
+    buf.writeUInt32LE(2, 0); // version
+    buf.writeUInt32LE(1, 0x34); // sig_algo
+    return buf.toString("base64");
+  }
+
+  type Json = Record<string, unknown>;
+
+  /**
+   * Build a fetch mock that branches on URL/host:
+   *   - raw.githubusercontent.com  => peers-list GET (newline text)
+   *   - {origin}/check_quote       => peer POST (JSON answer)
+   */
+  function makeFetch(opts: {
+    peersListText?: string | null; // null/undefined => refresh fails (non-200/error)
+    peersListThrows?: boolean;
+    peerHandler: (origin: string, body: Json) => Response | Promise<Response>;
+  }): typeof fetch {
+    return (async (url: any, init?: any): Promise<Response> => {
+      const u = String(url);
+      if (u.includes("raw.githubusercontent.com")) {
+        if (opts.peersListThrows) throw new Error("refresh network error");
+        if (opts.peersListText == null) {
+          return new Response("not found", { status: 404 });
+        }
+        return new Response(opts.peersListText, { status: 200 });
+      }
+      // peer POST {origin}/check_quote
+      const parsed = new URL(u);
+      assert.equal(parsed.pathname, "/check_quote");
+      const origin = parsed.origin;
+      const body = JSON.parse(init?.body) as Json;
+      return opts.peerHandler(origin, body);
+    }) as unknown as typeof fetch;
+  }
+
   function mockFetch(impl: typeof fetch): void {
     (globalThis as any).fetch = impl;
+    resetPeersCacheForTests();
   }
 
   function restoreFetch(): void {
     (globalThis as any).fetch = originalFetch;
+    resetPeersCacheForTests();
+    // Undo any best-effort persist a refresh test wrote to the bundled file.
+    writeFileSync(PEERS_FILE, bundledBackup, "utf8");
   }
 
-  it("returns PASS when endpoint confirms proof_of_cloud", async () => {
-    mockFetch(async () =>
-      new Response(
-        JSON.stringify({
-          proof_of_cloud: true,
-          origin: "scrt",
-          status: { attestation_type: "tdx", result: "0", exp_status: "0" },
-          quote: { machine_id: "abc123" },
-        }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
+  function jsonResponse(obj: Json, status = 200): Response {
+    return new Response(JSON.stringify(obj), {
+      status,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  it("sends a TDX (hex) quote unchanged and passes on whitelisted", async () => {
+    let sentQuote: unknown;
+    mockFetch(
+      makeFetch({
+        peersListThrows: true, // force bundled fallback
+        peerHandler: (_origin, body) => {
+          sentQuote = body.quote;
+          return jsonResponse({ whitelisted: true, machine_id: "mach-1" });
+        },
+      }),
     );
     try {
-      const result = await checkProofOfCloud("fake-quote");
+      const result = await checkProofOfCloud(TDX_QUOTE);
       assert.equal(result.valid, true);
       assert.equal(result.checks.proof_of_cloud_verified, true);
-      assert.equal(result.report.proof_of_cloud.origin, "scrt");
-      assert.equal(result.report.proof_of_cloud.machine_id, "abc123");
+      assert.equal(sentQuote, TDX_QUOTE.toLowerCase());
+      assert.equal(result.report.proof_of_cloud.whitelisted, true);
+      assert.equal(result.report.proof_of_cloud.machine_id, "mach-1");
+      assert.equal(result.report.proof_of_cloud.trust_server, BUNDLED_FIRST);
+      assert.deepEqual(result.report.proof_of_cloud.peers_tried, [BUNDLED_FIRST]);
       assert.deepEqual(result.errors, []);
     } finally {
       restoreFetch();
     }
   });
 
-  it("returns FAIL when endpoint reports proof_of_cloud=false", async () => {
-    mockFetch(async () =>
-      new Response(
-        JSON.stringify({ proof_of_cloud: false, origin: null }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      ),
+  it("converts a SEV-SNP (base64) quote to lowercase hex before sending", async () => {
+    const sevB64 = makeSevBase64();
+    const expectedHex = Buffer.from(sevB64, "base64").toString("hex");
+    let sentQuote: unknown;
+    mockFetch(
+      makeFetch({
+        peersListThrows: true,
+        peerHandler: (_origin, body) => {
+          sentQuote = body.quote;
+          return jsonResponse({ whitelisted: true, machine_id: "mach-sev" });
+        },
+      }),
     );
     try {
-      const result = await checkProofOfCloud("fake-quote");
-      assert.equal(result.valid, false);
-      assert.equal(result.checks.proof_of_cloud_verified, false);
-      assert.ok(result.errors.some((e) => e.includes("proof_of_cloud=false")));
+      const result = await checkProofOfCloud(sevB64);
+      assert.equal(result.valid, true);
+      assert.equal(sentQuote, expectedHex);
+      assert.equal(sentQuote, (sentQuote as string).toLowerCase());
+      assert.equal(result.report.proof_of_cloud.machine_id, "mach-sev");
     } finally {
       restoreFetch();
     }
   });
 
-  it("returns FAIL when endpoint returns non-200", async () => {
-    mockFetch(async () =>
-      new Response("Internal Server Error", { status: 500 }),
+  it("fails over to the second peer when the first peer fails", async () => {
+    mockFetch(
+      makeFetch({
+        peersListThrows: true,
+        peerHandler: (origin) => {
+          if (origin === BUNDLED_FIRST) {
+            // 404 with HTML body (route not implemented) => not usable
+            return new Response("<html>not found</html>", { status: 404 });
+          }
+          return jsonResponse({ whitelisted: true, machine_id: "mach-2" });
+        },
+      }),
     );
     try {
-      const result = await checkProofOfCloud("fake-quote");
+      const result = await checkProofOfCloud(TDX_QUOTE);
+      assert.equal(result.valid, true);
+      assert.equal(result.report.proof_of_cloud.trust_server, BUNDLED_SECOND);
+      assert.deepEqual(result.report.proof_of_cloud.peers_tried, [
+        BUNDLED_FIRST,
+        BUNDLED_SECOND,
+      ]);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("fails when no peer returns a usable answer", async () => {
+    mockFetch(
+      makeFetch({
+        peersListThrows: true,
+        peerHandler: () => new Response("err", { status: 500 }),
+      }),
+    );
+    try {
+      const result = await checkProofOfCloud(TDX_QUOTE);
       assert.equal(result.valid, false);
       assert.equal(result.checks.proof_of_cloud_verified, false);
+      assert.equal(result.report.proof_of_cloud.trust_server, null);
+      assert.equal(result.report.proof_of_cloud.machine_id, null);
+      assert.ok(result.report.proof_of_cloud.peers_tried.length >= 1);
+      assert.ok(result.errors.length >= 1);
       assert.ok(result.errors.some((e) => e.includes("HTTP 500")));
     } finally {
       restoreFetch();
     }
   });
 
-  it("returns FAIL on network error", async () => {
-    mockFetch(async () => {
-      throw new Error("ECONNREFUSED");
-    });
+  it("fails when the peer reports whitelisted:false", async () => {
+    mockFetch(
+      makeFetch({
+        peersListThrows: true,
+        peerHandler: () =>
+          jsonResponse({ whitelisted: false, machine_id: "mach-x" }),
+      }),
+    );
     try {
-      const result = await checkProofOfCloud("fake-quote");
+      const result = await checkProofOfCloud(TDX_QUOTE);
       assert.equal(result.valid, false);
-      assert.equal(result.checks.proof_of_cloud_verified, false);
-      assert.ok(result.errors.some((e) => e.includes("ECONNREFUSED")));
+      assert.equal(result.report.proof_of_cloud.whitelisted, false);
+      assert.equal(result.report.proof_of_cloud.machine_id, "mach-x");
+      assert.ok(
+        result.errors.some(
+          (e) => e.includes("mach-x") && e.includes("not whitelisted"),
+        ),
+      );
     } finally {
       restoreFetch();
     }
   });
 
-  it("posts the quote (trimmed) as JSON", async () => {
-    let captured: { url?: string; body?: unknown } = {};
-    mockFetch(async (url: any, init: any) => {
-      captured.url = String(url);
-      captured.body = JSON.parse(init?.body);
-      return new Response(
-        JSON.stringify({ proof_of_cloud: true, origin: "scrt" }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    });
+  it("fails when the peer reports revoked:true and surfaces revoked_at", async () => {
+    mockFetch(
+      makeFetch({
+        peersListThrows: true,
+        peerHandler: () =>
+          jsonResponse({
+            whitelisted: false,
+            machine_id: "mach-r",
+            revoked: true,
+            revoked_at: "2026-01-02T03:04:05Z",
+          }),
+      }),
+    );
     try {
-      await checkProofOfCloud("  raw-quote-text  \n");
-      assert.equal(captured.url, "https://secretai.scrtlabs.com/api/quote-parse");
-      assert.deepEqual(captured.body, { quote: "raw-quote-text" });
+      const result = await checkProofOfCloud(TDX_QUOTE);
+      assert.equal(result.valid, false);
+      assert.equal(result.report.proof_of_cloud.revoked, true);
+      assert.equal(
+        result.report.proof_of_cloud.revoked_at,
+        "2026-01-02T03:04:05Z",
+      );
+      assert.ok(
+        result.errors.some(
+          (e) => e.includes("mach-r") && e.includes("revoked"),
+        ),
+      );
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("uses the refreshed peers list when the GitHub fetch succeeds", async () => {
+    const refreshedPeer = "https://refreshed-peer.example.com";
+    let queriedOrigin: string | undefined;
+    mockFetch(
+      makeFetch({
+        peersListText: `# comment\n${refreshedPeer}/\n`,
+        peerHandler: (origin) => {
+          queriedOrigin = origin;
+          return jsonResponse({ whitelisted: true, machine_id: "mach-fresh" });
+        },
+      }),
+    );
+    try {
+      const result = await checkProofOfCloud(TDX_QUOTE);
+      assert.equal(result.valid, true);
+      assert.equal(queriedOrigin, refreshedPeer);
+      assert.equal(result.report.proof_of_cloud.trust_server, refreshedPeer);
+      assert.deepEqual(result.report.proof_of_cloud.peers_tried, [refreshedPeer]);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("falls back to the bundled list when the refresh fails", async () => {
+    mockFetch(
+      makeFetch({
+        peersListText: null, // 404 => refresh fails
+        peerHandler: () =>
+          jsonResponse({ whitelisted: true, machine_id: "mach-bundled" }),
+      }),
+    );
+    try {
+      const result = await checkProofOfCloud(TDX_QUOTE);
+      assert.equal(result.valid, true);
+      assert.equal(result.report.proof_of_cloud.trust_server, BUNDLED_FIRST);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("drops a non-https / malformed peer line without discarding the rest", async () => {
+    const goodPeer = "https://good-peer.example.com";
+    let queriedOrigin: string | undefined;
+    mockFetch(
+      makeFetch({
+        peersListText:
+          "not-a-url\nhttp://insecure-peer.example.com\n" + goodPeer + "\n",
+        peerHandler: (origin) => {
+          queriedOrigin = origin;
+          return jsonResponse({ whitelisted: true, machine_id: "mach-good" });
+        },
+      }),
+    );
+    try {
+      const result = await checkProofOfCloud(TDX_QUOTE);
+      assert.equal(result.valid, true);
+      assert.equal(queriedOrigin, goodPeer);
+      assert.deepEqual(result.report.proof_of_cloud.peers_tried, [goodPeer]);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it("returns an encode error with no network call on truncatable input", async () => {
+    let networkCalled = false;
+    mockFetch(
+      makeFetch({
+        peersListThrows: true,
+        peerHandler: () => {
+          networkCalled = true;
+          return jsonResponse({ whitelisted: true, machine_id: "x" });
+        },
+      }),
+    );
+    // Wrap to also detect the refresh GET being issued.
+    const branching = (globalThis as any).fetch;
+    (globalThis as any).fetch = (async (url: any, init?: any) => {
+      networkCalled = true;
+      return branching(url, init);
+    }) as typeof fetch;
+    try {
+      const result = await checkProofOfCloud("0400000081000000zz");
+      assert.equal(result.valid, false);
+      assert.equal(result.checks.proof_of_cloud_verified, false);
+      assert.equal(networkCalled, false);
+      assert.deepEqual(result.report.proof_of_cloud.peers_tried, []);
+      assert.equal(result.report.proof_of_cloud.trust_server, null);
+      assert.ok(
+        result.errors.some((e) => e.includes("Could not encode quote")),
+      );
     } finally {
       restoreFetch();
     }

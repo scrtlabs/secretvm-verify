@@ -212,8 +212,8 @@ def check_secret_vm(
         errors.append(f"Failed to fetch workload: {e}")
         checks["workload_fetched"] = False
 
-    # 7. Proof of cloud (opt-in): ask SCRT Labs' quote-parse endpoint whether
-    # this quote came from a Secret VM. Disabled by default — set
+    # 7. Proof of cloud (opt-in): ask the community trust-server peers whether
+    # this machine is on the Proof of Cloud whitelist. Disabled by default — set
     # check_proof_of_cloud=True (or --proof-of-cloud on the CLI) to include.
     if check_proof_of_cloud:
         poc_result = pkg.check_proof_of_cloud(cpu_data)
