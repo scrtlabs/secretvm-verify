@@ -43,8 +43,18 @@ https://trust-server.iex.ec/
 
 ## The trust-server `/check_quote` API
 
-(Confirmed against `proofofcloud/trust-server` `src/server.js` and
-`src/services.js`.)
+**Provenance:** confirmed by directly fetching `proofofcloud/trust-server`
+`src/server.js` and `src/services.js` from `main` on 2026-06-24. The `main`
+branch registers `app.post("/check_quote", ...)` → `checkQuote(quote)` in
+`services.js`, which returns the `{whitelisted, machine_id, revoked?,
+revoked_at?}` shapes below and treats a whitelist miss as a 200 (not an error).
+A web-search snapshot of the repo may show an older revision without this route
+— the live `main` source is authoritative here. (Note: not every *deployed*
+peer runs current `main`. As of 2026-06-24, `trust-server.nillion.network`
+returns **HTTP 404 with an HTML body** for `POST /check_quote` — it runs an
+older build that only exposes `/get_jwt`. The failover logic below must treat
+such a peer as "not a usable answer" and continue, which is exactly why
+non-200 and non-JSON responses are failure cases.)
 
 - **Path:** `POST /check_quote` (underscore, **not** `/check-quote`).
 - **Request body:** `{"quote": "<hex_encoded_quote>"}`. The server rejects any
@@ -77,9 +87,22 @@ Detection reuses the existing logic:
 - Node: `node/src/cpu.ts` quote-type detection (hex ⇒ TDX, base64 ⇒ SEV-SNP).
 - Python: `_detect_cpu_quote_type` in `python/src/secretvm/verify/cpu.py`.
 
-The ProofOfCloud module will expose a small helper that takes `cpu_data` and
-returns the canonical lowercase-hex string, raising/erroring clearly if the
-input matches neither hex nor base64.
+The ProofOfCloud module will expose a small helper, `toHexQuote(cpuData)`, that
+returns the canonical **lowercase** hex string (the TDX path is also lowercased,
+so the helper's output is uniformly lowercase even though the server regex would
+accept uppercase), and errors clearly if the input matches neither hex nor
+base64.
+
+**Strict validation (do not rely on the detector alone).** The existing
+detectors only sniff the leading header bytes, and `Buffer.from(text, "hex")` /
+`bytes.fromhex` can silently truncate or partially accept malformed input. The
+helper must therefore validate the *whole* string before sending:
+
+- TDX path: after `trim()`, require the entire string to match
+  `^[0-9a-fA-F]+$` with even length; lowercase it. Reject otherwise.
+- SEV-SNP path: strict base64 decode of the whole string (no silent
+  truncation), then re-encode the decoded bytes as lowercase hex.
+- If neither validates, return an encode error (no network call is made).
 
 ## Trust model: failover (first usable answer)
 
@@ -87,12 +110,17 @@ Peers are tried **in list order**. For each peer:
 
 1. `POST {peer}/check_quote` with `{"quote": "<hex>"}` and a per-peer timeout
    of **10 seconds**.
-2. A **usable answer** is: HTTP 200, body parses as JSON, and the body contains
-   a boolean `whitelisted` field and a `machine_id`. The first usable answer is
-   accepted and iteration stops.
+2. A **usable answer** is: HTTP 200, body parses as JSON, `whitelisted` is a
+   JSON **boolean**, and `machine_id` is a **non-empty string**. If `revoked` is
+   present it must be a boolean; when `revoked === true`, `revoked_at` is read as
+   a string (a missing/non-string `revoked_at` is tolerated and reported as
+   `null`). The first such answer is accepted and iteration stops.
 3. Anything else (network/timeout error, non-200 status, body not JSON, or JSON
-   missing the expected fields) is recorded as that peer's failure reason and
-   iteration continues to the next peer.
+   with `whitelisted`/`machine_id` missing or of the wrong type) is recorded as
+   that peer's failure reason and iteration continues to the next peer. A peer
+   that doesn't implement the route (e.g. a 404 with an HTML body, as
+   `trust-server.nillion.network` currently returns) lands here via the non-200
+   / not-JSON checks.
 
 Verdict from the accepted answer:
 
@@ -111,6 +139,16 @@ A single community-vetted peer is sufficient to produce a verdict; the remaining
 peers exist as fallbacks for availability. (Quorum/consensus was explicitly
 considered and rejected for this iteration.)
 
+**Assumption — peers share a whitelist source.** Because failover stops at the
+first *usable* answer (including a definitive `whitelisted: false`), peer order
+can in principle change the verdict if two peers disagree. This is acceptable
+**only** under the assumption that all peers derive their whitelist and
+revocation lists from the same Proof of Cloud database (the trust-server README
+states both lists are "sourced from the Proof of Cloud database"). We rely on
+that shared source: any peer's answer is treated as authoritative for the
+machine. If that assumption ever breaks, this design would need to revisit
+consensus. This assumption is documented, not enforced.
+
 ## Peer list management: bundle + auto-refresh
 
 Mirror the repo's existing artifact-registry pattern
@@ -123,32 +161,55 @@ Mirror the repo's existing artifact-registry pattern
 
   Seeded with the three current peers, one URL per line.
 
-- **Refresh:** at the start of a ProofOfCloud check, attempt one fetch of the
-  raw GitHub `peers_list.txt`. Validate it parses to a **non-empty** list of
-  `https://` URLs; if so, overwrite the local bundled copy and use it. On **any**
-  failure (network, non-200, empty, malformed, or no `https://` entries), keep
-  the bundled copy silently — the check still proceeds against the bundled list.
+- **Refresh (once per process, best-effort, in-memory-first):** the first time a
+  ProofOfCloud check runs in a process, attempt **one** fetch of the raw GitHub
+  `peers_list.txt` with a **5-second timeout**. The resolved peer list is then
+  memoized at module level and reused by subsequent checks in the same process —
+  it is **not** re-fetched on every call. (This is a deliberate divergence from
+  the cited registry-refresh pattern, which fetches only on a registry *miss*:
+  refreshing + writing to the package dir on every verification would add a
+  GitHub round-trip and a file write to every check and would fail on read-only
+  installs.)
 
-- **Parsing:** one URL per line; `trim()` each line; skip blank lines and lines
-  starting with `#`; strip a single trailing `/` from each URL so
-  `{url}/check_quote` never produces a double slash. Only `https://` URLs are
-  accepted (entries that don't start with `https://` are dropped, both on
-  refresh-validation and when loading the bundled file).
+  - If the fetch+parse yields a **non-empty** list of valid peers: use that list
+    (in memory) for this process, regardless of whether persisting it to disk
+    succeeds.
+  - **Best-effort persist:** also try to overwrite the bundled copy on disk so a
+    future *offline* process starts from the newer list. If the write fails
+    (read-only install — Docker, system site-packages, global npm), ignore the
+    error; the in-memory list is still used this process.
+  - On **any** fetch failure (network error, timeout, non-200, empty body, parse
+    yields zero valid peers): fall back to the bundled copy on disk, silently.
+    The check still proceeds. A hung/slow GitHub connection cannot stall the
+    check beyond the 5-second refresh timeout.
 
-- Refresh is attempted **once per check call** (not cached across calls within a
-  process). This keeps behavior simple and predictable; the network cost is one
-  small GET per verification, the same shape as the existing registry refresh.
+- **Parsing (shared by both the refreshed text and the bundled file):**
+  - Split on newlines; `trim()` each line; skip blank lines and lines starting
+    with `#`.
+  - Parse each remaining line with the platform URL parser. Keep a line **only**
+    if it parses and its protocol is exactly `https:`. Reduce it to its
+    **origin** (`scheme://host[:port]`), discarding any path, query, or
+    fragment, so the request URL is always `{origin}/check_quote` with no double
+    slashes or stray path segments. Invalid or non-`https:` lines are dropped
+    individually (a malformed line does not discard the whole list).
+  - A refreshed list is "valid" iff it yields **≥1** peer after this filtering;
+    otherwise refresh is treated as a failure and the bundled copy is used.
 
-## Result shape (backward compatible)
+## Result shape (call-shape compatible; report contents change)
 
-The public surface is unchanged so existing integrations keep working:
+"Backward compatible" here means the *call shape* and *check name* are
+unchanged, so existing integrations keep working without edits. The **contents**
+of `report.proof_of_cloud` do change (the old secretai-specific fields are gone).
 
 - Attestation type stays `"PROOF-OF-CLOUD"`.
 - The check key stays `proof_of_cloud_verified` (boolean).
 - `vm.py` / `vm.ts` / `agent.py` / `agent.ts` integration and the
   `--proof-of-cloud` CLI flag are untouched in their call shape.
-- `report.proof_of_cloud` is still populated, but its **contents** change to
-  reflect the trust-server response:
+- `report.proof_of_cloud` is **always populated on every return path** (success,
+  not-whitelisted, revoked, no-peer-answered, and encode-failure). This matters
+  because the callers copy it only when present (`vm.ts`/`agent.ts` guard on
+  `!== undefined`; `vm.py`/`agent.py` guard on `is not None`) — always
+  populating it keeps the top-level report shape consistent. Contents:
 
   ```json
   {
@@ -161,10 +222,12 @@ The public surface is unchanged so existing integrations keep working:
   }
   ```
 
-  - `trust_server` is the peer URL whose answer was accepted (null if none
-    answered).
-  - `peers_tried` lists every peer attempted, in order (so a reader can see
-    which peers were skipped/failed before one answered).
+  - `trust_server` is the peer URL whose answer was accepted, or `null` if no
+    peer returned a usable answer / the quote could not be encoded.
+  - `machine_id` is `null` when no peer answered or on encode failure.
+  - `whitelisted` is `false` and `revoked` is `false` in every non-pass path.
+  - `peers_tried` lists every peer attempted, in order (empty `[]` on encode
+    failure, since no peer is contacted).
 
 The old curated fields (`origin`, `status`, `proof_of_cloud`) are removed; they
 were specific to the secretai quote-parse response and have no equivalent here.
@@ -179,26 +242,39 @@ is).
 New/changed units, each independently testable:
 
 1. **Peer list loader + refresher** (per SDK)
-   - `loadBundledPeers()` → `string[]` (parsed, normalized, https-only).
-   - `refreshPeersFromGitHub()` → `bool` (fetch+validate+overwrite; false on any
-     error). Same contract as `refreshRegistryFromGitHub`.
-   - Depends on: filesystem (data dir), network (GitHub raw).
+   - `loadBundledPeers()` → `string[]` — read the bundled file, parse per the
+     rules above (https-only origins). Used as the offline fallback.
+   - `resolvePeers()` → `string[]` — module-memoized: on first call, attempt
+     `refreshPeersFromGitHub()`; use its result if it yielded ≥1 peer, else
+     `loadBundledPeers()`. Cache and return the same list for the rest of the
+     process.
+   - `refreshPeersFromGitHub()` → `string[] | null` — fetch the raw GitHub list
+     with a **5s timeout**, parse it; return the parsed peers if ≥1 valid,
+     else `null`. Best-effort persist the raw text to the bundled file; ignore
+     write errors. Never throws (any error → `null`).
+   - Depends on: filesystem (data dir), network (GitHub raw, 5s timeout).
 
 2. **Quote→hex encoder** (per SDK)
    - `toHexQuote(cpuData)` → lowercase hex string; reuses existing quote-type
-     detection. Errors clearly on unrecognized input.
+     detection **and** strictly validates the whole string (full hex regex for
+     TDX; strict base64 for SEV-SNP) before returning. Errors clearly on
+     unrecognized/invalid input.
    - Depends on: existing `cpu` detection helpers.
 
 3. **Single-peer query** (per SDK)
    - `queryPeer(peerUrl, hexQuote)` → either a parsed usable answer
-     `{whitelisted, machine_id, revoked?, revoked_at?}` or a failure reason
+     `{whitelisted, machine_id, revoked, revoked_at}` or a failure reason
      string.
-   - Depends on: network, 10s timeout.
+   - Depends on: network, **10s timeout** (Node: `AbortSignal.timeout(10000)`,
+     since `fetch` has no native timeout option; Python: `requests` `timeout=`).
 
 4. **Orchestrator** = `checkProofOfCloud` / `check_proof_of_cloud`
-   - Refresh peers (best-effort) → load peers → for each peer call `queryPeer`
-     until first usable answer → build `AttestationResult`.
-   - Python keeps `check_proof_of_cloud_async` as the async variant.
+   - `toHexQuote` (encode error → early return with populated report) →
+     `resolvePeers()` → for each peer call `queryPeer` until first usable answer
+     → build `AttestationResult` (report always populated).
+   - Python keeps `check_proof_of_cloud_async` as the async variant
+     (`asyncio.to_thread` over the sync path, so blocking network never blocks
+     the event loop).
 
 ## Error handling summary
 
@@ -213,19 +289,38 @@ New/changed units, each independently testable:
 
 ## Testing
 
-Both SDKs (`node/src/index.test.ts`, `python/tests/test_verification.py`),
-mocking HTTP:
+These rewrite the existing PoC test blocks (`node/src/index.test.ts` currently
+asserts the old `secretai.scrtlabs.com/api/quote-parse` URL/body and uses
+non-quote strings; `python/tests/test_verification.py` mocks
+`secretvm.verify.check_proof_of_cloud` in the VM/agent integration tests — those
+integration mocks stay, but the PoC-module tests are replaced).
+
+**Mock dispatch by URL.** The new code issues two distinct HTTP shapes: the
+GitHub `raw.githubusercontent.com/.../peers_list.txt` GET (returns newline text)
+and the peer `POST {origin}/check_quote` (returns JSON). Tests must branch the
+mock on the URL/host so the refresh GET and the peer POSTs don't cross-feed
+(e.g. JSON returned to the peers-list parser). Node mocks `globalThis.fetch`;
+Python mocks `requests` for peer queries and `urllib.request.urlopen` for the
+refresh fetch. Reset the module-level peers memoization between tests.
+
+Cases (both SDKs):
 
 - TDX quote (hex) is sent to a peer unchanged; pass on `whitelisted:true`.
-- SEV-SNP quote (base64) is converted to hex before sending; pass.
-- First peer errors (network/500/malformed) → second peer answers → verdict
-  taken from second peer; `peers_tried` shows both.
-- All peers fail → `proof_of_cloud_verified:false` with per-peer reasons.
+- SEV-SNP quote (base64) is converted to lowercase hex before sending; pass.
+- First peer errors (network / non-200 / 404-HTML / malformed JSON) → second
+  peer answers → verdict taken from second peer; `peers_tried` shows both.
+- All peers fail → `proof_of_cloud_verified:false`, `report.proof_of_cloud`
+  populated (`trust_server:null`, `machine_id:null`), per-peer reasons in errors.
 - `whitelisted:false` → fail with not-whitelisted error.
 - `revoked:true` → fail with revocation error and `revoked_at` in report.
-- Refresh success overwrites bundled list and uses the new list; refresh
-  failure falls back to bundled list (check still runs).
-- Unrecognized `cpu_data` → clear encode error, no network call.
+- Refresh success → new list used (peer from refreshed list is queried);
+  refresh failure / timeout → falls back to bundled list, check still runs.
+- Refresh fetch+validate succeeds but disk write fails (simulate read-only) →
+  in-memory refreshed list still used.
+- Malformed peers line / non-`https:` line is dropped without discarding the
+  rest of the list.
+- Unrecognized or truncatable `cpu_data` (e.g. `0400000081000000zz`) → clear
+  encode error, no network call, `peers_tried:[]`.
 
 ## Out of scope
 
@@ -241,7 +336,9 @@ mocking HTTP:
 - `node/data/trust_server_peers.txt` (new)
 - `python/src/secretvm/verify/data/trust_server_peers.txt` (new)
 - Tests: `node/src/index.test.ts`, `python/tests/test_verification.py`
-- Docs: `README.md`, `docs/sdk/verification-checks.md`
+- Docs: `README.md`, `node/README.md`, `python/README.md`,
+  `docs/sdk/verification-checks.md` (all reference the old quote-parse endpoint
+  and/or old report fields and must be updated).
 - Package data manifests so the new data file ships:
   - Python: `pyproject.toml` `[tool.setuptools.package-data]` currently lists
     only `data/*.csv` and `data/*.json` — add `data/*.txt`.
