@@ -65,8 +65,11 @@ def to_hex_quote(cpu_data: str) -> str:
         return text.lower()
 
     if quote_type == "SEV-SNP":
+        # Strip internal whitespace first (a VM may serve line-wrapped base64),
+        # matching the Node SDK and the main SEV path in amd.py, then strict-decode.
+        compact = re.sub(r"\s+", "", text)
         try:
-            raw = base64.b64decode(text, validate=True)
+            raw = base64.b64decode(compact, validate=True)
         except Exception:
             raise ValueError(
                 "Could not encode quote for trust-server (unrecognized quote format)"
@@ -277,13 +280,17 @@ def check_proof_of_cloud(cpu_data: str) -> AttestationResult:
         errors.append("No trust-server peers available")
         return _result(False, peers_tried=[])
 
-    # 3. Failover: try peers in order, first usable answer wins.
+    # 3. Failover: try peers in order, first usable answer wins. Per-peer
+    # transport/parse failures are collected separately and only surfaced if no
+    # peer returns a usable answer (a definitive verdict from a later peer must
+    # not carry earlier peers' failure noise).
     peers_tried: list = []
+    reasons: list = []
     for origin in peers:
         peers_tried.append(origin)
         answer = _query_peer(origin, hex_quote)
         if isinstance(answer, str):
-            errors.append(answer)
+            reasons.append(answer)
             continue
 
         machine_id = answer["machine_id"]
@@ -292,7 +299,8 @@ def check_proof_of_cloud(cpu_data: str) -> AttestationResult:
         revoked_at = answer["revoked_at"]
 
         if revoked:
-            errors.append(f"Machine {machine_id} was revoked on {revoked_at}")
+            when = revoked_at if revoked_at else "an unknown date"
+            errors.append(f"Machine {machine_id} was revoked on {when}")
             return _result(
                 False, whitelisted=False, machine_id=machine_id, revoked=True,
                 revoked_at=revoked_at, trust_server=origin, peers_tried=peers_tried,
@@ -313,7 +321,8 @@ def check_proof_of_cloud(cpu_data: str) -> AttestationResult:
             revoked_at=None, trust_server=origin, peers_tried=peers_tried,
         )
 
-    # 4. No peer returned a usable answer (errors already hold per-peer reasons).
+    # 4. No peer returned a usable answer — surface every peer's failure reason.
+    errors.extend(reasons)
     return _result(False, peers_tried=peers_tried)
 
 

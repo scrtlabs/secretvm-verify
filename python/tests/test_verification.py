@@ -922,6 +922,32 @@ class TestProofOfCloud:
             "https://trust-server.nillion.network",
         ]
         assert rep["machine_id"] == "mach-2"
+        # A definitive verdict from a later peer must not carry the earlier
+        # peer's failure reason in errors.
+        assert result.errors == []
+
+    def test_sev_base64_with_internal_whitespace(self, amd_quote):
+        import base64
+        import re
+        from secretvm.verify import proof_of_cloud as poc
+        # A VM may serve line-wrapped base64; it must encode the same as compact.
+        compact = re.sub(r"\s+", "", amd_quote.strip())
+        wrapped = "\n".join(compact[i:i + 64] for i in range(0, len(compact), 64))
+        expected_hex = base64.b64decode(compact).hex()
+        captured = {}
+
+        def fake_post(url, json=None, timeout=None):
+            captured["quote"] = json["quote"]
+            return self._peer_response(
+                json_body={"whitelisted": True, "machine_id": "mach-sev"}
+            )
+
+        with self._patch_refresh_fail(), \
+             patch(f"{self._POC}.requests.post", side_effect=fake_post):
+            result = poc.check_proof_of_cloud(wrapped)
+
+        assert result.valid is True
+        assert captured["quote"] == expected_hex
 
     def test_all_peers_fail(self, tdx_quote):
         from secretvm.verify import proof_of_cloud as poc

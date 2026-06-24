@@ -300,7 +300,7 @@ export async function checkProofOfCloud(
   // 5. Build verdict from the accepted answer.
   if (answer.revoked) {
     errors.push(
-      `Machine ${answer.machine_id} was revoked on ${answer.revoked_at}`,
+      `Machine ${answer.machine_id} was revoked on ${answer.revoked_at ?? "an unknown date"}`,
     );
     checks.proof_of_cloud_verified = false;
     return makeResult("PROOF-OF-CLOUD", {
