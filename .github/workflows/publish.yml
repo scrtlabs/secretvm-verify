@@ -49,17 +49,16 @@ jobs:
 
       - run: npm run build
 
-      - name: Diagnose OIDC publishing environment
+      - name: Publish to npm (OIDC trusted publishing)
+        # setup-node points NPM_CONFIG_USERCONFIG at a temp .npmrc that carries a
+        # stale `_auth`. Any credential makes npm skip the OIDC exchange (then
+        # fail ENEEDAUTH), so publish against a clean userconfig with no auth.
+        env:
+          NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npmrc-clean
         run: |
-          echo "node: $(node -v)"
-          echo "npm:  $(npm -v)  (path: $(which npm))"
-          echo "OIDC request URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
-          echo "OIDC request token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
-          echo "--- effective npmrc (auth lines redacted) ---"
-          npm config ls -l 2>/dev/null | grep -iE "registry|//|provenance|auth" || true
-
-      - run: npm publish --access public
-        # Authenticated via OIDC trusted publishing — no NODE_AUTH_TOKEN needed.
+          printf 'registry=https://registry.npmjs.org/\nprovenance=true\n' > "$NPM_CONFIG_USERCONFIG"
+          echo "npm $(npm -v); OIDC url set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          npm publish --access public
 
   publish-pypi:
     # Only on real releases. Manual workflow_dispatch runs publish npm only
