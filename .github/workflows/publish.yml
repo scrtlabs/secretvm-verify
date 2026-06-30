@@ -57,8 +57,7 @@ jobs:
           NPM_CONFIG_USERCONFIG: ${{ runner.temp }}/npmrc-clean
         run: |
           printf 'registry=https://registry.npmjs.org/\nprovenance=true\n' > "$NPM_CONFIG_USERCONFIG"
-          echo "npm $(npm -v); OIDC url set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
-          npm publish --access public --loglevel silly
+          npm publish --access public
 
   publish-pypi:
     # Only on real releases. Manual workflow_dispatch runs publish npm only
