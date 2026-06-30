@@ -3,10 +3,22 @@ name: Publish to npm and PyPI
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.10.0). npm only; PyPI is skipped on manual runs."
+        required: true
 
 jobs:
   publish-npm:
     runs-on: ubuntu-latest
+    # OIDC trusted publishing: id-token mints a short-lived credential per run,
+    # replacing the long-lived NPM_TOKEN secret. Configure the trusted publisher
+    # for this package on npmjs.com (repo scrtlabs/secretvm-verify, workflow
+    # publish.yml, no environment).
+    permissions:
+      id-token: write
+      contents: read
     defaults:
       run:
         working-directory: node
@@ -18,6 +30,10 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
+      - name: Upgrade npm for OIDC trusted publishing
+        # The Node 20 runner ships npm 10.x; OIDC trusted publishing needs >= 11.5.1.
+        run: npm install -g npm@latest
+
       - run: npm ci
 
       - name: Sync artifact registry data
@@ -25,16 +41,18 @@ jobs:
           cp ../artifacts_registry/tdx.csv data/tdx.csv
           cp ../artifacts_registry/sev.json data/sev.json
 
-      - name: Set version from tag
-        run: npm version "${{ github.event.release.tag_name }}" --no-git-tag-version --allow-same-version
+      - name: Set version
+        run: npm version "${{ github.event.release.tag_name || inputs.version }}" --no-git-tag-version --allow-same-version
 
       - run: npm run build
 
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Authenticated via OIDC trusted publishing — no NODE_AUTH_TOKEN needed.
 
   publish-pypi:
+    # Only on real releases. Manual workflow_dispatch runs publish npm only
+    # (PyPI rejects re-uploading an existing version).
+    if: github.event_name == 'release'
     runs-on: ubuntu-latest
     defaults:
       run:
