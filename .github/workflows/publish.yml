@@ -49,6 +49,15 @@ jobs:
 
       - run: npm run build
 
+      - name: Diagnose OIDC publishing environment
+        run: |
+          echo "node: $(node -v)"
+          echo "npm:  $(npm -v)  (path: $(which npm))"
+          echo "OIDC request URL set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
+          echo "OIDC request token set: ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+yes}"
+          echo "--- effective npmrc (auth lines redacted) ---"
+          npm config ls -l 2>/dev/null | grep -iE "registry|//|provenance|auth" || true
+
       - run: npm publish --access public
         # Authenticated via OIDC trusted publishing — no NODE_AUTH_TOKEN needed.
 
