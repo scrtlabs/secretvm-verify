@@ -39,6 +39,14 @@
     "tee"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scrtlabs/secretvm-verify.git"
+  },
+  "homepage": "https://github.com/scrtlabs/secretvm-verify#readme",
+  "bugs": {
+    "url": "https://github.com/scrtlabs/secretvm-verify/issues"
+  },
   "dependencies": {
     "@phala/dcap-qvl": "0.3.9",
     "asn1js": "^3.0.5",
