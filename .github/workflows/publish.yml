@@ -58,8 +58,7 @@ jobs:
         run: |
           printf 'registry=https://registry.npmjs.org/\nprovenance=true\n' > "$NPM_CONFIG_USERCONFIG"
           echo "npm $(npm -v); OIDC url set: ${ACTIONS_ID_TOKEN_REQUEST_URL:+yes}"
-          npm publish --access public --loglevel verbose 2>&1 | grep -iE "oidc|id-token|trusted|audience|exchange|provenance|authent|registry.*token" || true
-          npm publish --access public
+          npm publish --access public --loglevel silly
 
   publish-pypi:
     # Only on real releases. Manual workflow_dispatch runs publish npm only
