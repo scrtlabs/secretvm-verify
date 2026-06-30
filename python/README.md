@@ -9,7 +9,7 @@ Attestation verification SDK for confidential computing environments. Verifies I
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX or SEV-SNP quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image and verifies the exact compose file that was booted.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates TLS and GPU cryptographic bindings.
-- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Opt-in: pass `check_proof_of_cloud=True` to `check_secret_vm` / `check_agent` / `verify_agent`, or use `--proof-of-cloud` on the CLI. A standalone `check_proof_of_cloud` / `check_proof_of_cloud_async` function is also exposed.
+- **Proof of cloud** — Encodes a CPU quote to hex and queries the community-vetted [trust-server peers](https://github.com/proofofcloud/trust-server) (`POST /check_quote`) with failover, confirming the machine is whitelisted (and not revoked) by the Proof of Cloud network. Opt-in: pass `check_proof_of_cloud=True` to `check_secret_vm` / `check_agent` / `verify_agent`, or use `--proof-of-cloud` on the CLI. A standalone `check_proof_of_cloud` / `check_proof_of_cloud_async` function is also exposed.
 - **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow. Three composable functions:
   - **`resolve_agent`** — Queries the on-chain registry contract for the agent's metadata.
   - **`verify_agent`** — Takes agent metadata and runs full TEE verification against the agent's declared endpoints.
@@ -149,7 +149,7 @@ End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GP
 - `url` — VM address (e.g., `"my-vm.example.com"`, `"https://my-vm:29343"`)
 - `product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
 - `reload_amd_kds` — If `True`, bypass the AMD KDS cache (no effect on TDX).
-- `check_proof_of_cloud` — If `True`, also POST the quote to SCRT Labs' `/api/quote-parse` endpoint. Opt-in; off by default.
+- `check_proof_of_cloud` — If `True`, also query the trust-server peer network to confirm the machine is whitelisted by Proof of Cloud. Opt-in; off by default.
 
 The returned `result.report["docker_compose"]` contains the raw docker-compose the VM served.
 
@@ -169,11 +169,11 @@ Verifies an AMD SEV-SNP attestation report.
 
 Verifies NVIDIA GPU attestation via NRAS.
 
-#### `check_proof_of_cloud(quote)` / `check_proof_of_cloud_async(quote)`
+#### `check_proof_of_cloud(cpu_data)` / `check_proof_of_cloud_async(cpu_data)`
 
-POSTs a raw CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint. Returns an `AttestationResult` with `attestation_type="PROOF-OF-CLOUD"` and a single check `proof_of_cloud_verified`. The report exposes `origin`, `proof_of_cloud`, `status`, and `machine_id`. Also runs automatically inside `check_secret_vm`.
+Encodes the CPU quote to lowercase hex (TDX hex passes through; SEV-SNP base64 is decoded and re-encoded) and queries the [trust-server peers](https://github.com/proofofcloud/trust-server) at `POST /check_quote`. Peers are tried in order; the first usable answer (HTTP 200 with a boolean `whitelisted` and a non-empty `machine_id`) wins. The peer list ships bundled (`data/trust_server_peers.txt`) and is best-effort refreshed once per process from GitHub (5s timeout, falls back to the bundled list on any failure).
 
-The Node CLI also splices this verdict into the output of `--cpu`, `--tdx`, and `--sev` as the `proof_of_cloud_verified` check row.
+Returns an `AttestationResult` with `attestation_type="PROOF-OF-CLOUD"` and a single check `proof_of_cloud_verified` (`True` iff `whitelisted` and not `revoked`). The report's `proof_of_cloud` object is always populated with `whitelisted`, `machine_id`, `revoked`, `revoked_at`, `trust_server` (the peer whose answer was accepted, or `null`), and `peers_tried` (peers attempted in order; `[]` when the quote could not be encoded). Also runs automatically inside `check_secret_vm`.
 
 #### `resolve_secretvm_version(data)`
 

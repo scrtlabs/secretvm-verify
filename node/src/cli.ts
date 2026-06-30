@@ -119,8 +119,8 @@ if (dockerFilesSha256) {
 } else if (dockerFilesPath) {
   dockerFilesInput.dockerFiles = readFileSync(dockerFilesPath);
 }
-// Opt-in proof-of-cloud (POSTs the CPU quote to SCRT Labs' quote-parse
-// endpoint). Off by default across all verbs; pass --proof-of-cloud to enable.
+// Opt-in proof-of-cloud (POSTs the CPU quote to the community trust-server
+// peers' /check_quote). Off by default across all verbs; pass --proof-of-cloud to enable.
 const checkPoc = getFlag("--proof-of-cloud");
 // When set, prints the docker-compose.yaml after the check list so the
 // verifier can see the actual workload that was measured. Works with

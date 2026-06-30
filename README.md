@@ -13,7 +13,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates two critical bindings:
   - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 fingerprint of the VM's TLS certificate, proving the quote was generated on the machine serving that certificate.
   - **GPU binding**: The second 32 bytes of `report_data` must match the GPU attestation nonce, proving the CPU and GPU attestations are linked.
-- **Proof of cloud** — POSTs a CPU quote to SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint, which confirms the quote originated on a Secret VM and returns its `origin` and `machine_id`. Opt-in: pass `check_proof_of_cloud=True` / `checkProofOfCloud=true` to `check_secret_vm` / `check_agent` / `verify_agent` (or use `--proof-of-cloud` on the CLI). Also exposed as a standalone `check_proof_of_cloud` / `checkProofOfCloud` function.
+- **Proof of cloud** — POSTs a CPU quote to the community-vetted [trust-server peers](https://github.com/proofofcloud/trust-server/blob/main/public_info/peers_list.txt) (`/check_quote`), which confirm the underlying machine is on the Proof of Cloud whitelist and return its `machine_id`. The SDK tries peers in order and uses the first that responds (failover); the peer list is bundled and best-effort refreshed from GitHub. Opt-in: pass `check_proof_of_cloud=True` / `checkProofOfCloud=true` to `check_secret_vm` / `check_agent` / `verify_agent` (or use `--proof-of-cloud` on the CLI). Also exposed as a standalone `check_proof_of_cloud` / `checkProofOfCloud` function.
 - **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow (TLS binding, CPU attestation, GPU attestation, and workload verification). Three composable functions:
   - **`resolveAgent`** — Queries the on-chain registry contract for the agent's metadata (tokenURI -> services, supportedTrust).
   - **`verifyAgent`** — Takes agent metadata and runs full TEE verification against the agent's declared endpoints.
@@ -257,7 +257,7 @@ End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GP
 | `gpu_binding_verified` | report_data second half matches GPU nonce (only if GPU present) |
 | `workload_fetched` | `docker-compose` fetched from `/docker-compose` endpoint |
 | `workload_binding_verified` | Workload (docker-compose hash) matches the attested one |
-| `proof_of_cloud_verified` | SCRT Labs' quote-parse endpoint confirms the VM is a Secret VM |
+| `proof_of_cloud_verified` | A trust-server peer confirms the machine is on the Proof of Cloud whitelist |
 
 ---
 
@@ -296,14 +296,14 @@ Verifies an AMD SEV-SNP attestation report.
 
 #### `check_proof_of_cloud(quote)` / `checkProofOfCloud(quote)`
 
-Verifies a raw CPU quote against SCRT Labs' [`/api/quote-parse`](https://secretai.scrtlabs.com/api/quote-parse) endpoint. The service parses the quote, confirms it was produced by a Secret VM, and returns the VM's `origin` and `machine_id`.
+Verifies a raw CPU quote against the community-vetted [trust-server peers](https://github.com/proofofcloud/trust-server/blob/main/public_info/peers_list.txt). The quote is hex-encoded and POSTed to each peer's `/check_quote` endpoint in order; the first peer that returns a usable answer decides the verdict (failover). Each peer reports whether the machine is on the Proof of Cloud whitelist (and whether it has been revoked).
 
 **Parameters:**
 - `quote` — Raw CPU quote text as served by the VM's `/cpu` endpoint.
 
-**Checks performed:** `proof_of_cloud_verified` (HTTP 200 and body contains `proof_of_cloud: true`).
+**Checks performed:** `proof_of_cloud_verified` (a peer returned `whitelisted: true` and the machine is not revoked).
 
-**Report fields:** `origin`, `proof_of_cloud`, `status` (`{attestation_type, result, exp_status}`), `machine_id`.
+**Report fields:** `whitelisted`, `machine_id`, `revoked`, `revoked_at`, `trust_server` (the peer URL that answered, or `null`), `peers_tried` (peers attempted, in order).
 
 Also runs automatically as part of `check_secret_vm` and is spliced into the CLI output for `--cpu`, `--tdx`, and `--sev` as the `proof_of_cloud_verified` check.
 
@@ -497,8 +497,8 @@ Options:
   --verbose, -v        Print parsed CPU/GPU/proof-of-cloud quotes as JSON (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
-  --proof-of-cloud     Also ask SCRT Labs' quote-parse endpoint to confirm the
-                       quote originated on a Secret VM (opt-in; off by default)
+  --proof-of-cloud     Also ask the community trust-server peers to confirm the
+                       machine is on the Proof of Cloud whitelist (opt-in; off by default)
   --show-compose       Print the docker-compose.yaml that was verified after the
                        check list (works with --secretvm, --verify-workload,
                        --check-agent, --agent)
@@ -522,7 +522,7 @@ The library contacts these services during verification:
 | Service | Used by | Purpose |
 |---------|---------|---------|
 | [SCRT PCCS](https://pccs.scrtlabs.com) | TDX | DCAP collateral (TCB Info, QE Identity, PCK CRL, Root CA CRL, issuer chains). Override with `SECRETVM_PCCS_URL` (e.g. `https://api.trustedservices.intel.com` for Intel's PCS, or your own deployment). |
-| [SCRT Labs quote-parse](https://secretai.scrtlabs.com/api/quote-parse) | Secret VM, `--cpu`/`--tdx`/`--sev`, agent | Proof-of-cloud verdict (confirms quote originated on a Secret VM) |
+| [Trust-server peers](https://github.com/proofofcloud/trust-server/blob/main/public_info/peers_list.txt) | Secret VM, `--cpu`/`--tdx`/`--sev`, agent (with `--proof-of-cloud`) | Proof-of-cloud verdict via `/check_quote` (machine is on the Proof of Cloud whitelist); peer list refreshed from GitHub |
 | [AMD KDS](https://kdsintf.amd.com) | SEV-SNP | VCEK certificate, AMD CA cert chain (ASK + ARK), CRL |
 | [NVIDIA NRAS](https://nras.attestation.nvidia.com) | GPU | GPU attestation verification |
 

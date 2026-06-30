@@ -166,9 +166,9 @@ export async function checkSecretVm(
     checks.workload_fetched = false;
   }
 
-  // 7. Proof of cloud (opt-in): SCRT Labs' quote-parse endpoint identifies
-  // the VM as a Secret VM. Disabled by default — pass checkProofOfCloud=true
-  // (or --proof-of-cloud on the CLI) to include this check.
+  // 7. Proof of cloud (opt-in): the community trust-server peers confirm the
+  // machine is on the Proof of Cloud whitelist. Disabled by default — pass
+  // checkProofOfCloud=true (or --proof-of-cloud on the CLI) to include this check.
   if (checkProofOfCloud) {
     const pocResult = await checkProofOfCloud_(cpuData);
     checks.proof_of_cloud_verified = pocResult.valid;

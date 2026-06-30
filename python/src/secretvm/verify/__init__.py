@@ -41,7 +41,7 @@ from .cpu import check_cpu_attestation, check_cpu_attestation_async
 # NVIDIA GPU
 from .nvidia import check_nvidia_gpu_attestation, check_nvidia_gpu_attestation_async
 
-# Proof of cloud (SCRT Labs quote-parse)
+# Proof of cloud (trust-server peers /check_quote)
 from .proof_of_cloud import check_proof_of_cloud, check_proof_of_cloud_async
 
 # Secret VM
