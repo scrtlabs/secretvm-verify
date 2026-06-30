@@ -28,7 +28,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          registry-url: https://registry.npmjs.org
+          # No registry-url: it makes setup-node write an .npmrc with a
+          # placeholder _authToken, which forces (failing) token auth and
+          # blocks the OIDC trusted-publishing exchange. npm defaults to
+          # registry.npmjs.org and uses OIDC when no token is present.
 
       - name: Upgrade npm for OIDC trusted publishing
         # The Node 20 runner ships npm 10.x; OIDC trusted publishing needs >= 11.5.1.
