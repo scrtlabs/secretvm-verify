@@ -1,6 +1,12 @@
 import { parseTdxQuoteFields } from "./tdx.js";
 import { detectCpuQuoteType } from "./cpu.js";
-import { isVmUrl, fetchCpuQuote, fetchDockerCompose } from "./url.js";
+import {
+    endpointBaseUrl,
+    fetchCpuQuote,
+    fetchDockerCompose,
+    isVmUrl,
+    parseServiceBaseUrl,
+} from "./url.js";
 import {
     findMatchingArtifacts,
     pickNewestVersion,
@@ -12,6 +18,8 @@ import {
 import { calculateRtmr3 } from "./rtmr.js";
 import { calcSevMeasurement, parseSevFamilyId, VCPU_MAP } from "./sevGctx.js";
 import { createHash } from "node:crypto";
+
+const SECRET_VM_PORT = 29343;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -201,7 +209,9 @@ export function formatWorkloadResult(r: WorkloadResult, vmUrl?: string): string 
 
     const vmLine = `✅ Confirmed an authentic SecretVM, vm_type ${r.template_name}, artifacts ${r.artifacts_ver}, environment ${r.env}`;
 
-    const source = vmUrl ? `the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose` : "the specified docker-compose.yaml";
+    const source = vmUrl
+        ? `the docker-compose.yaml specified at ${endpointBaseUrl(parseServiceBaseUrl(vmUrl, SECRET_VM_PORT))}/docker-compose`
+        : "the specified docker-compose.yaml";
 
     if (r.status === "authentic_match") {
         return vmLine + `\n✅ Confirmed that the VM is running ${source}`;

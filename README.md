@@ -11,7 +11,7 @@ Available as both a **Python** (PyPI) and **Node.js** (npm) package.
 - **NVIDIA GPU** — Submits GPU attestation evidence to NVIDIA's Remote Attestation Service (NRAS), verifies the returned JWT signatures against NVIDIA's published JWKS keys, and extracts per-GPU attestation claims.
 - **SecretVM workload** — Given a TDX or SEV-SNP quote and a `docker-compose.yaml`, determines whether the quote was produced by a known SecretVM image (`resolveSecretVmVersion` / `verifyTdxWorkload` / `verifySevWorkload`). Looks up the quote in a signed registry of official SecretVM builds, then replays the launch measurement to verify the exact compose file that was booted. For VMs that also bake a Dockerfiles archive into the image, both paths accept an optional docker-files digest via `--docker-files` / `--docker-files-sha256`: TDX extends RTMR3 with it, SEV-SNP appends it to the kernel cmdline as `docker_additional_files_hash=<hex>` (which the launch measurement covers).
 - **Secret VM** — End-to-end verification that connects to a VM's attestation endpoints, verifies CPU and GPU attestation, and validates two critical bindings:
-  - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 fingerprint of the VM's TLS certificate, proving the quote was generated on the machine serving that certificate.
+  - **TLS binding**: The first 32 bytes of the CPU quote's `report_data` must match the SHA-256 digest of the VM's TLS certificate SPKI, proving the quote was generated on the machine serving that public key.
   - **GPU binding**: The second 32 bytes of `report_data` must match the GPU attestation nonce, proving the CPU and GPU attestations are linked.
 - **Proof of cloud** — POSTs a CPU quote to the community-vetted [trust-server peers](https://github.com/proofofcloud/trust-server/blob/main/public_info/peers_list.txt) (`/check_quote`), which confirm the underlying machine is on the Proof of Cloud whitelist and return its `machine_id`. The SDK tries peers in order and uses the first that responds (failover); the peer list is bundled and best-effort refreshed from GitHub. Opt-in: pass `check_proof_of_cloud=True` / `checkProofOfCloud=true` to `check_secret_vm` / `check_agent` / `verify_agent` (or use `--proof-of-cloud` on the CLI). Also exposed as a standalone `check_proof_of_cloud` / `checkProofOfCloud` function.
 - **ERC-8004 Agent verification** — End-to-end verification of on-chain AI agents registered under the [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) standard. Resolves agent metadata from any supported blockchain (Ethereum, Base, Arbitrum, Polygon, and 14 more), discovers the agent's TEE attestation endpoints, and runs the full verification flow (TLS binding, CPU attestation, GPU attestation, and workload verification). Three composable functions:
@@ -44,12 +44,12 @@ The simplest way to verify a VM — handles CPU detection, GPU detection, and al
 ```python
 from secretvm.verify import check_secret_vm
 
-result = check_secret_vm("my-vm.example.com")
+result = check_secret_vm("https://my-vm.example.com:21434")
 
 print(result.valid)           # True if all checks pass
 print(result.attestation_type) # "SECRET-VM"
 print(result.checks)          # {"cpu_quote_fetched": True, "tls_cert_fetched": True, ...}
-print(result.report)          # {"tls_fingerprint": "...", "cpu": {...}, "cpu_type": "TDX", ...}
+print(result.report)          # {"tls_spki_fingerprint": "...", "cpu": {...}, "cpu_type": "TDX", ...}
 print(result.errors)          # [] if no errors
 ```
 
@@ -58,12 +58,12 @@ print(result.errors)          # [] if no errors
 ```typescript
 import { checkSecretVm } from 'secretvm-verify';
 
-const result = await checkSecretVm('my-vm.example.com');
+const result = await checkSecretVm('https://my-vm.example.com:21434');
 
 console.log(result.valid);           // true if all checks pass
 console.log(result.attestationType); // "SECRET-VM"
 console.log(result.checks);         // { cpu_quote_fetched: true, tls_cert_fetched: true, ... }
-console.log(result.report);         // { tls_fingerprint: "...", cpu: {...}, cpu_type: "TDX", ... }
+console.log(result.report);         // { tls_spki_fingerprint: "...", cpu: {...}, cpu_type: "TDX", ... }
 console.log(result.errors);         // [] if no errors
 ```
 
@@ -90,7 +90,7 @@ import { resolveAgent, verifyAgent } from 'secretvm-verify';
 // Step 1: Resolve agent metadata from the blockchain
 const metadata = await resolveAgent(38114, 'base');
 console.log(metadata.name);            // Agent name
-console.log(metadata.services);        // [{ name: "teequote", endpoint: "..." }, ...]
+console.log(metadata.services);        // [{ name: "teequote", endpoint: "..." }, { name: "inference", endpoint: "..." }, ...]
 console.log(metadata.supportedTrust);  // ["tee-attestation"]
 
 // Step 2: Verify the agent's TEE attestation
@@ -237,24 +237,47 @@ All functions return an `AttestationResult` with these fields:
 
 ### Functions
 
-#### `check_secret_vm(url, product="")` / `checkSecretVm(url, product?)`
+#### `check_secret_vm(url, product="", reload_amd_kds=False, check_proof_of_cloud=False)`
 
-End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GPU quotes, verifies both, and checks TLS and GPU bindings.
+Python end-to-end Secret VM verification. Connects to the attestation service base URL, fetches CPU and GPU quotes, verifies both, and checks TLS SPKI and GPU bindings. If `url` has no port, the attestation service defaults to port `29343`; explicit ports are preserved.
 
 **Parameters:**
-- `url` — VM address (e.g., `"my-vm.example.com"`, `"https://my-vm:29343"`)
+- `url` — VM attestation service base URL (e.g., `"https://my-vm:21434"`, `"https://my-vm/teequote"`)
 - `product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
+- `reload_amd_kds` — If `True`, bypass the AMD KDS cache (no effect on TDX).
+- `check_proof_of_cloud` — If `True`, also query the trust-server peer network. Opt-in; off by default.
+
+#### `checkSecretVm(url, options?)`
+
+Node end-to-end Secret VM verification. Supports the same attestation service base URL behavior as Python and accepts an options object.
+
+**Parameters:**
+- `url` — VM attestation service base URL (e.g., `"https://my-vm:21434"`, `"https://my-vm/teequote"`). Explicit ports are preserved, including `:443`.
+- `options.product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
+- `options.reloadAmdKds` — If `true`, bypass the AMD KDS cache (no effect on TDX).
+- `options.checkProofOfCloud` — If `true`, also query the trust-server peers. Opt-in; off by default.
+- `options.tlsUrl` — Optional HTTPS service endpoint whose TLS certificate SPKI is bound in `report_data`. Use this when attestation is served on one port and inference traffic on another.
+- `options.dockerFilesInput` — Optional Dockerfiles archive bytes or SHA-256 digest to include in workload verification.
+- `options.strict` — If `true`, fail closed when AMD KDS is unreachable instead of using stale cache entries.
+
+```js
+const result = await checkSecretVm('https://my-vm.example.com:21434');
+
+const splitEndpointResult = await checkSecretVm('https://my-vm.example.com:29343', {
+  tlsUrl: 'https://my-vm.example.com:21434',
+});
+```
 
 **Checks performed:**
 | Check | Description |
 |-------|-------------|
 | `cpu_quote_fetched` | CPU quote fetched from `/cpu` endpoint |
-| `tls_cert_fetched` | TLS certificate retrieved from the VM |
+| `tls_cert_fetched` | TLS certificate retrieved from the binding endpoint |
 | `cpu_quote_verified` | CPU attestation signature chain verified |
-| `tls_binding_verified` | report_data first half matches TLS cert fingerprint |
-| `gpu_quote_fetched` | GPU quote fetched from `/gpu` endpoint (false if no GPU) |
-| `gpu_quote_verified` | GPU attestation verified via NVIDIA NRAS (only if GPU present) |
-| `gpu_binding_verified` | report_data second half matches GPU nonce (only if GPU present) |
+| `tls_binding_verified` | report_data first half matches the TLS certificate SPKI digest |
+| `gpu_quote_fetched` | GPU quote fetched from `/gpu` endpoint |
+| `gpu_quote_verified` | GPU attestation verified via NVIDIA NRAS |
+| `gpu_binding_verified` | report_data second half matches GPU nonce |
 | `workload_fetched` | `docker-compose` fetched from `/docker-compose` endpoint |
 | `workload_binding_verified` | Workload (docker-compose hash) matches the attested one |
 | `proof_of_cloud_verified` | A trust-server peer confirms the machine is on the Proof of Cloud whitelist |
@@ -509,10 +532,10 @@ Options:
 ```bash
 cd python
 pip install -e .
-python check_vm.py https://my-vm:29343
-python check_vm.py https://my-vm:29343 --json    # minimal JSON
-python check_vm.py https://my-vm:29343 --raw     # full JSON with parsed report
-python check_vm.py https://my-vm:29343 --product Genoa
+python check_vm.py https://my-vm:21434
+python check_vm.py https://my-vm:21434 --json    # minimal JSON
+python check_vm.py https://my-vm:21434 --raw     # full JSON with parsed report
+python check_vm.py https://my-vm:21434 --product Genoa
 ```
 
 ## External services
@@ -583,7 +606,7 @@ result = check_agent(agent_id, "base", reload_amd_kds=True)
 Node:
 ```js
 const result = await checkSevCpuAttestation(quote, "Genoa", true);
-const result = await checkSecretVm(url, "", true);
+const result = await checkSecretVm(url, { reloadAmdKds: true });
 const result = await checkCpuAttestation(quote, "Genoa", true);
 const result = await checkAgent(agentId, "base", true);
 ```

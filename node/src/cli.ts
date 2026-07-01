@@ -17,7 +17,7 @@ import {
   formatWorkloadResult,
 } from "./index.js";
 import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
-import { extractDockerCompose } from "./vm.js";
+import { endpointBaseUrl, parseServiceBaseUrl } from "./url.js";
 import { orderChecks } from "./types.js";
 import type { AttestationResult } from "./types.js";
 
@@ -97,8 +97,17 @@ function minimalJson(result: AttestationResult): object {
   const { report: _report, ...rest } = result;
   return rest;
 }
+
+function formatCheckLine(name: string, passed: boolean): string {
+  const status = name === "gpu_quote_fetched" && !passed
+    ? "FAIL (required GPU evidence fetch failed)"
+    : passed ? "PASS" : "FAIL";
+  return `  ${(name + ":").padEnd(35)} ${status}`;
+}
+
 const product = getFlagValue("--product") ?? "";
 const vmUrl = getFlagValue("--vm");
+const tlsUrl = getFlagValue("--tls-url") ?? getFlagValue("--service-url");
 // `--reload-amd-kds` bypasses the local AMD KDS cache and re-fetches
 // VCEK, AMD CA cert chain, and CRL from kdsintf.amd.com. No effect on TDX.
 const reloadAmdKds = getFlag("--reload-amd-kds");
@@ -130,16 +139,16 @@ const showCompose = getFlag("--show-compose");
 const SECRET_VM_PORT = 29343;
 
 async function fetchFromVm(endpoint: string): Promise<string> {
-  let url = vmUrl!;
-  if (!url.includes("://")) url = `https://${url}`;
-  const parsed = new URL(url);
-  const port = parsed.port || SECRET_VM_PORT;
-  const base = `https://${parsed.hostname}:${port}`;
+  const base = endpointBaseUrl(parseServiceBaseUrl(vmUrl!, SECRET_VM_PORT, "--vm URL"));
   const resp = await fetch(`${base}/${endpoint}`);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${base}/${endpoint}`);
-  const text = await resp.text();
-  if (endpoint === "docker-compose") return extractDockerCompose(text);
-  return text;
+  return resp.text();
+}
+
+function dockerComposeSource(url?: string): string {
+  if (!url) return "the specified docker-compose.yaml";
+  const base = endpointBaseUrl(parseServiceBaseUrl(url, SECRET_VM_PORT, "--vm URL"));
+  return `the docker-compose.yaml specified at ${base}/docker-compose`;
 }
 
 function getQuoteData(flagName: string, shortFlag?: string): string {
@@ -169,8 +178,10 @@ async function getGpuQuote(flagName: string): Promise<string> {
 const USAGE = `Usage: secretvm-verify <command> <value> [--product NAME] [--json|--raw] [--verbose|-v]
 
 Commands:
-  --secretvm <url> [--docker-files <tar> | --docker-files-sha256 <hex>]
+  --secretvm <url> [--tls-url <url>] [--docker-files <tar> | --docker-files-sha256 <hex>]
                                     Verify a Secret VM (CPU + GPU + TLS binding + workload).
+                                    --tls-url verifies report_data against a separate service
+                                    TLS endpoint while quotes/workload still come from <url>.
                                     Optionally pass --docker-files (the archive baked into
                                     the VM) or --docker-files-sha256 (its hex digest) so the
                                     workload check includes the docker-files measurement.
@@ -195,6 +206,8 @@ Commands:
 
 Options:
   --vm <url>           Fetch quote from a VM instead of a file (works with --cpu, --tdx, --sev, --gpu, -rv, -vw)
+  --tls-url <url>      TLS service endpoint for --secretvm binding verification.
+                       Alias: --service-url
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin). Optional; auto-detected if omitted.
   --json               Output minimal JSON (valid, checks, errors) — omits the report fields
@@ -212,25 +225,26 @@ Options:
   --version, -V        Print secretvm-verify version and exit.
 
 Examples:
-  secretvm-verify --secretvm my-vm.example.com
+  secretvm-verify --secretvm my-vm.example.com:21434
+  secretvm-verify --secretvm my-vm.example.com:29343 --tls-url my-vm.example.com:21434
   secretvm-verify --k8scluster my-vm.scrtlabs.com
-  secretvm-verify --secretvm my-vm.example.com --docker-files-sha256 <hex>
+  secretvm-verify --secretvm my-vm.example.com:21434 --docker-files-sha256 <hex>
   secretvm-verify --tdx cpu_quote.txt
-  secretvm-verify --tdx --vm my-vm.example.com
-  secretvm-verify --cpu --vm my-vm.example.com
+  secretvm-verify --tdx --vm my-vm.example.com:21434
+  secretvm-verify --cpu --vm my-vm.example.com:21434
   secretvm-verify --sev amd_cpu_quote.txt --product Genoa
   secretvm-verify --gpu gpu_attest.txt
   secretvm-verify --cpu cpu_quote.txt --raw
-  secretvm-verify -rv --vm my-vm.example.com
-  secretvm-verify -vw --vm my-vm.example.com
+  secretvm-verify -rv --vm my-vm.example.com:21434
+  secretvm-verify -vw --vm my-vm.example.com:21434
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files docker-files.tar
   secretvm-verify --verify-workload cpu_quote.txt --compose docker-compose.yaml --docker-files-sha256 <hex>
   secretvm-verify --check-agent 38114 --chain base
   secretvm-verify --check-agent 38114 --chain base -v
   secretvm-verify --agent metadata.json
-  secretvm-verify --secretvm my-vm.example.com --show-compose
-  secretvm-verify --compose --vm my-vm.example.com
+  secretvm-verify --secretvm my-vm.example.com:21434 --show-compose
+  secretvm-verify --compose --vm my-vm.example.com:21434
   secretvm-verify --compose docker-compose.yaml`;
 
 function formatError(err: any): string {
@@ -260,7 +274,14 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput, strict);
+    result = await checkSecretVm(url, {
+      product,
+      reloadAmdKds,
+      checkProofOfCloud: checkPoc,
+      dockerFilesInput,
+      strict,
+      tlsUrl,
+    });
   } else if (getFlag("--cpu")) {
     const quoteData = await getCpuQuote("--cpu");
     const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
@@ -370,7 +391,7 @@ try {
       }
       // Workload verification — authoritative; also identifies VM version
       const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
-      const src = vmUrl ? `the docker-compose.yaml specified at ${vmUrl}:29343/docker-compose` : "the specified docker-compose.yaml";
+      const src = dockerComposeSource(vmUrl);
       if (workloadResult.status === "authentic_match") {
         console.log(`✅ Authentic SecretVM confirmed: ${workloadResult.template_name} ${workloadResult.artifacts_ver} (${workloadResult.env})`);
         console.log(`✅ Confirmed that the VM is running ${src}`);
@@ -510,16 +531,17 @@ try {
       console.log(`    Domain:  ${verifyTarget}\n`);
 
       try {
-        const nodeResult = await checkSecretVm(`https://${verifyTarget}`, product, reloadAmdKds, checkPoc, dockerFilesInput, strict);
+        const nodeResult = await checkSecretVm(`https://${verifyTarget}`, {
+          product,
+          reloadAmdKds,
+          checkProofOfCloud: checkPoc,
+          dockerFilesInput,
+          strict,
+        });
         
         console.log("Checks:");
         for (const [name, passed] of Object.entries(nodeResult.checks)) {
-          if (name === "gpu_quote_fetched" && !passed) {
-            console.log(`  ${"gpu:".padEnd(35)} GPU not present`);
-            continue;
-          }
-          const status = passed ? "PASS" : "FAIL";
-          console.log(`  ${(name + ":").padEnd(35)} ${status}`);
+          console.log(formatCheckLine(name, passed));
         }
 
         if (nodeResult.errors.length > 0) {
@@ -550,7 +572,14 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput);
+    result = await checkSecretVm(url, {
+      product,
+      reloadAmdKds,
+      checkProofOfCloud: checkPoc,
+      dockerFilesInput,
+      strict,
+      tlsUrl,
+    });
   }
 
   // Output
@@ -567,12 +596,7 @@ try {
 
   console.log("Checks:");
   for (const [name, passed] of Object.entries(result.checks)) {
-    if (name === "gpu_quote_fetched" && !passed) {
-      console.log(`  ${"gpu:".padEnd(35)} GPU not present`);
-      continue;
-    }
-    const status = passed ? "PASS" : "FAIL";
-    console.log(`  ${(name + ":").padEnd(35)} ${status}`);
+    console.log(formatCheckLine(name, passed));
   }
 
   if (verbose) {

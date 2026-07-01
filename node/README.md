@@ -30,12 +30,12 @@ The simplest way to verify a VM — handles CPU detection, GPU detection, and al
 ```typescript
 import { checkSecretVm } from 'secretvm-verify';
 
-const result = await checkSecretVm('my-vm.example.com');
+const result = await checkSecretVm('https://my-vm.example.com:21434');
 
 console.log(result.valid);           // true if all checks pass
 console.log(result.attestationType); // "SECRET-VM"
 console.log(result.checks);         // { cpu_quote_fetched: true, tls_cert_fetched: true, ... }
-console.log(result.report);         // { tls_fingerprint: "...", cpu: {...}, cpu_type: "TDX", ... }
+console.log(result.report);         // { tls_spki_fingerprint: "...", cpu: {...}, cpu_type: "TDX", ... }
 console.log(result.errors);         // [] if no errors
 ```
 
@@ -62,14 +62,14 @@ import { resolveAgent, verifyAgent } from 'secretvm-verify';
 // Step 1: Resolve agent metadata from the blockchain
 const metadata = await resolveAgent(38114, 'base');
 console.log(metadata.name);            // Agent name
-console.log(metadata.services);        // [{ name: "teequote", endpoint: "..." }, ...]
+console.log(metadata.services);        // [{ name: "teequote", endpoint: "..." }, { name: "inference", endpoint: "..." }, ...]
 console.log(metadata.supportedTrust);  // ["tee-attestation"]
 
 // Step 2: Verify the agent's TEE attestation
 const result = await verifyAgent(metadata);
 ```
 
-**RPC configuration:** Set `SECRETVM_RPC_BASE` (or `SECRETVM_RPC_<CHAIN>`) environment variable to use your own RPC endpoint. Falls back to public RPCs if not set.
+**RPC configuration:** Set `SECRETVM_RPC_BASE` (or `SECRETVM_RPC_<CHAIN>`) or `SECRETVM_RPC_URL` before using agent resolution. No default RPCs are shipped with the package.
 
 ### Resolve SecretVM version from a quote
 
@@ -145,17 +145,30 @@ All functions return an `AttestationResult` with these fields:
 
 ### Functions
 
-#### `checkSecretVm(url, product?, reloadAmdKds?, checkProofOfCloud?)`
+#### `checkSecretVm(url, options?)`
 
-End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GPU quotes, verifies both, and checks TLS and GPU bindings.
+End-to-end Secret VM verification. Connects to the attestation service base URL, fetches CPU and GPU quotes, verifies both, and checks TLS SPKI and GPU bindings. If `url` has no port, the attestation service defaults to port `29343`; explicit ports are preserved.
 
 **Parameters:**
-- `url` — VM address (e.g., `"my-vm.example.com"`, `"https://my-vm:29343"`)
-- `product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
-- `reloadAmdKds` — If `true`, bypass the AMD KDS cache (no effect on TDX).
-- `checkProofOfCloud` — If `true`, also query the trust-server peers (`POST {peer}/check_quote`) to confirm the machine is whitelisted in the Proof of Cloud database. Opt-in; off by default.
+- `url` — VM attestation service base URL (e.g., `"https://my-vm:21434"`, `"https://my-vm/teequote"`). Explicit ports are preserved, including `:443`.
+- `options.product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
+- `options.reloadAmdKds` — If `true`, bypass the AMD KDS cache (no effect on TDX).
+- `options.checkProofOfCloud` — If `true`, also query the trust-server peers (`POST {peer}/check_quote`) to confirm the machine is whitelisted in the Proof of Cloud database. Opt-in; off by default.
+- `options.tlsUrl` — Optional HTTPS service endpoint whose TLS certificate SPKI is bound in `report_data`. Use this when attestation is served on one port and inference traffic on another.
+- `options.dockerFilesInput` — Optional Dockerfiles archive bytes or SHA-256 digest to include in workload verification.
+- `options.strict` — If `true`, fail closed when AMD KDS is unreachable instead of using stale cache entries.
 
 The returned `result.report.docker_compose` contains the raw docker-compose the VM served (useful for inspecting what was measured).
+
+```js
+const result = await checkSecretVm('https://my-vm.example.com:21434');
+
+const splitEndpointResult = await checkSecretVm('https://my-vm.example.com:29343', {
+  tlsUrl: 'https://my-vm.example.com:21434',
+});
+```
+
+The legacy positional form is still accepted for existing callers, but new code should use the options object.
 
 #### `checkCpuAttestation(data, product?)`
 
@@ -235,7 +248,7 @@ Resolves an agent's metadata from the on-chain registry contract. Returns an `Ag
 
 #### `verifyAgent(metadata)`
 
-Verifies an ERC-8004 agent given its metadata. Discovers teequote/workload endpoints and runs the full verification flow.
+Verifies an ERC-8004 agent given its metadata. The metadata must include exactly one `teequote` service for attestation and exactly one `inference` service for the public TLS endpoint whose SPKI is bound in the quote. A `workload` service is optional, but if present it must also be unique and must be a service-base URL; verification fetches `/docker-compose` from that base.
 
 **Parameters:**
 - `metadata` — `AgentMetadata` object with `name`, `supportedTrust`, and `services`
@@ -247,7 +260,7 @@ Verifies an ERC-8004 agent given its metadata. Discovers teequote/workload endpo
 | `name` | `string` | Agent name |
 | `description` | `string \| undefined` | Agent description |
 | `supportedTrust` | `string[]` | Trust models (must include `"tee-attestation"`) |
-| `services` | `AgentService[]` | Service endpoints (`name` + `endpoint`) |
+| `services` | `AgentService[]` | Service endpoints. `verifyAgent` requires unique `teequote` and `inference` entries; optional `workload` must be a unique service-base URL when present. |
 
 ### RPC Configuration
 
@@ -285,6 +298,8 @@ Then use from anywhere:
 ```bash
 # Verify a Secret VM (CPU + GPU + TLS binding)
 secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com:21434
+secretvm-verify --secretvm yellow-krill.vm.scrtlabs.com:29343 --tls-url yellow-krill.vm.scrtlabs.com:21434
 
 # Verify individual attestation quotes from files
 secretvm-verify --tdx cpu_quote.txt
@@ -379,7 +394,7 @@ Programmatic — pass `true` as the third argument:
 
 ```js
 const result = await checkSevCpuAttestation(quote, "Genoa", /* reloadAmdKds */ true);
-const result = await checkSecretVm(url, "", /* reloadAmdKds */ true);
+const result = await checkSecretVm(url, { reloadAmdKds: true });
 const result = await checkCpuAttestation(quote, "Genoa", /* reloadAmdKds */ true);
 const result = await checkAgent(agentId, "base", /* reloadAmdKds */ true);
 ```
