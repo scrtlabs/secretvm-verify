@@ -4,7 +4,6 @@ import asyncio
 import base64
 import json
 from typing import Optional
-from urllib.parse import urlparse
 
 import requests
 
@@ -12,7 +11,7 @@ from .types import AttestationResult, AgentService, AgentMetadata, order_checks
 from .cpu import check_cpu_attestation
 from .nvidia import check_nvidia_gpu_attestation
 from .workload import verify_workload
-from .vm import _get_tls_cert_fingerprint, _extract_docker_compose
+from .vm import _get_tls_cert_fingerprint, _parse_service_base_url, _parse_tls_endpoint
 
 _DEFAULT_REGISTRY = "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432"
 _SEPOLIA_REGISTRY = "0x8004A818BFB912233c491871b3d84c89A494BD9e"
@@ -106,27 +105,28 @@ def _normalize_agent_services(raw) -> list[AgentService]:
     return result
 
 
-def _find_teequote_endpoint(services: list[AgentService]) -> Optional[str]:
-    for s in services:
-        if s.name.lower() == "teequote" and s.endpoint:
-            return s.endpoint
-    for s in services:
-        if s.endpoint and ":29343" in s.endpoint:
-            return s.endpoint
-    return None
+def _find_required_unique_service(services: list[AgentService], service_name: str) -> tuple[Optional[str], Optional[str]]:
+    matches = [
+        s.endpoint.strip()
+        for s in services
+        if s.name.lower() == service_name and s.endpoint.strip()
+    ]
+    if not matches:
+        return None, f"No {service_name} service endpoint found in agent metadata"
+    if len(matches) > 1:
+        return None, f"Multiple {service_name} service endpoints found in agent metadata"
+    return matches[0], None
 
 
-def _find_workload_endpoint(services: list[AgentService]) -> Optional[str]:
-    for s in services:
-        if s.name.lower() == "workload" and s.endpoint:
-            return s.endpoint
-    return None
-
-
-def _normalize_endpoint(endpoint: str) -> str:
-    if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
-        return f"https://{endpoint}"
-    return endpoint
+def _find_optional_unique_service(services: list[AgentService], service_name: str) -> tuple[Optional[str], Optional[str]]:
+    matches = [
+        s.endpoint.strip()
+        for s in services
+        if s.name.lower() == service_name and s.endpoint.strip()
+    ]
+    if len(matches) > 1:
+        return None, f"Multiple {service_name} service endpoints found in agent metadata"
+    return (matches[0] if matches else None), None
 
 
 def resolve_agent(agent_id: int, chain: str) -> AgentMetadata:
@@ -240,38 +240,74 @@ def verify_agent(
             checks=order_checks(checks), report=report, errors=errors,
         )
 
-    teequote_endpoint = _find_teequote_endpoint(metadata.services)
-    if not teequote_endpoint:
-        errors.append("No teequote service endpoint found in agent metadata")
+    teequote_endpoint, service_error = _find_required_unique_service(metadata.services, "teequote")
+    if service_error or not teequote_endpoint:
+        errors.append(service_error or "No teequote service endpoint found in agent metadata")
         checks["metadata_valid"] = False
         return AttestationResult(
             valid=False, attestation_type="ERC-8004",
             checks=order_checks(checks), report=report, errors=errors,
         )
+
+    inference_endpoint, service_error = _find_required_unique_service(metadata.services, "inference")
+    if service_error or not inference_endpoint:
+        errors.append(service_error or "No inference service endpoint found in agent metadata")
+        checks["metadata_valid"] = False
+        return AttestationResult(
+            valid=False, attestation_type="ERC-8004",
+            checks=order_checks(checks), report=report, errors=errors,
+        )
+
+    workload_service, service_error = _find_optional_unique_service(metadata.services, "workload")
+    if service_error:
+        errors.append(service_error)
+        checks["metadata_valid"] = False
+        return AttestationResult(
+            valid=False, attestation_type="ERC-8004",
+            checks=order_checks(checks), report=report, errors=errors,
+        )
+    workload_base_url = None
+    if workload_service:
+        try:
+            workload_base_url = _parse_service_base_url(
+                workload_service,
+                label="workload service endpoint",
+            ).base_url
+        except Exception as e:
+            errors.append(str(e))
+            checks["metadata_valid"] = False
+            return AttestationResult(
+                valid=False, attestation_type="ERC-8004",
+                checks=order_checks(checks), report=report, errors=errors,
+            )
     checks["metadata_valid"] = True
 
     # 2. Derive URLs
-    base_url = _normalize_endpoint(teequote_endpoint).rstrip("/")
-    cpu_url = base_url if base_url.endswith("/cpu") else f"{base_url}/cpu"
-    gpu_url = base_url.replace("/cpu", "/gpu") if base_url.endswith("/cpu") else f"{base_url}/gpu"
-
-    workload_service = _find_workload_endpoint(metadata.services)
-    if workload_service:
-        workload_url = _normalize_endpoint(workload_service)
-    elif base_url.endswith("/cpu"):
-        workload_url = base_url.replace("/cpu", "/docker-compose")
-    else:
-        workload_url = f"{base_url}/docker-compose"
-
-    parsed = urlparse(cpu_url.replace("/cpu", "") if cpu_url.endswith("/cpu") else cpu_url)
-    host = parsed.hostname
-    port = parsed.port or 443
-
-    # 3. TLS certificate fingerprint
     try:
-        tls_fingerprint = _get_tls_cert_fingerprint(host, port)
+        attestation_endpoint = _parse_service_base_url(teequote_endpoint, label="teequote service endpoint")
+        tls_endpoint = _parse_tls_endpoint(inference_endpoint, label="inference service endpoint")
+    except Exception as e:
+        errors.append(str(e))
+        checks["metadata_valid"] = False
+        return AttestationResult(
+            valid=False, attestation_type="ERC-8004",
+            checks=order_checks(checks), report=report, errors=errors,
+        )
+
+    base_url = attestation_endpoint.base_url
+    cpu_url = f"{base_url}/cpu"
+    gpu_url = f"{base_url}/gpu"
+    workload_url = f"{workload_base_url or base_url}/docker-compose"
+
+    report["attestation_url"] = attestation_endpoint.base_url
+    report["tls_binding_url"] = tls_endpoint.base_url
+    report["tls_binding_service"] = "inference"
+
+    # 3. TLS certificate SPKI fingerprint
+    try:
+        tls_spki_fingerprint = _get_tls_cert_fingerprint(tls_endpoint.host, tls_endpoint.port)
         checks["tls_cert_fetched"] = True
-        report["tls_fingerprint"] = tls_fingerprint.hex()
+        report["tls_spki_fingerprint"] = tls_spki_fingerprint.hex()
     except Exception as e:
         errors.append(f"Failed to get TLS certificate: {e}")
         checks["tls_cert_fetched"] = False
@@ -305,40 +341,47 @@ def verify_agent(
     report_data_hex = cpu_result.report.get("report_data", "")
     if len(report_data_hex) >= 64:
         first_half = report_data_hex[:64]
-        checks["tls_binding_verified"] = first_half == tls_fingerprint.hex()
+        checks["tls_binding_verified"] = first_half == tls_spki_fingerprint.hex()
         if not checks["tls_binding_verified"]:
             errors.append(
                 f"TLS binding failed: report_data first half ({first_half[:16]}...) "
-                f"!= TLS fingerprint ({tls_fingerprint.hex()[:16]}...)"
+                f"!= TLS SPKI fingerprint ({tls_spki_fingerprint.hex()[:16]}...)"
             )
     else:
         checks["tls_binding_verified"] = False
         errors.append("report_data too short for TLS binding check")
 
-    # 6. GPU quote (optional)
-    gpu_present = False
     gpu_data = ""
+    gpu_json = None
     try:
         resp = requests.get(gpu_url, timeout=15, verify=True)
         resp.raise_for_status()
-        gpu_json = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else json.loads(resp.text)
+        gpu_json = json.loads(resp.text)
         if "error" in gpu_json:
-            checks["gpu_quote_fetched"] = False
-        else:
-            gpu_present = True
-            checks["gpu_quote_fetched"] = True
-            gpu_data = resp.text
-    except Exception:
+            raise ValueError(str(gpu_json["error"]))
+        if not isinstance(gpu_json.get("nonce"), str) or not gpu_json["nonce"]:
+            raise ValueError("GPU attestation missing nonce")
+        checks["gpu_quote_fetched"] = True
+        gpu_data = resp.text
+    except Exception as e:
+        errors.append(f"Failed to fetch GPU attestation: {e}")
         checks["gpu_quote_fetched"] = False
+        checks["gpu_quote_verified"] = False
+        checks["gpu_binding_verified"] = False
 
-    if gpu_present:
-        gpu_result = check_nvidia_gpu_attestation(gpu_data)
+    if checks.get("gpu_quote_fetched"):
+        try:
+            gpu_result = check_nvidia_gpu_attestation(gpu_data)
+        except Exception as e:
+            gpu_result = AttestationResult(
+                valid=False, attestation_type="NVIDIA-GPU",
+                checks={}, report={}, errors=[f"GPU attestation verification failed: {e}"],
+            )
         checks["gpu_quote_verified"] = gpu_result.valid
         report["gpu"] = gpu_result.report
         if not gpu_result.valid:
             errors.extend(gpu_result.errors)
 
-        gpu_json = json.loads(gpu_data)
         gpu_nonce = gpu_json.get("nonce", "")
         if len(report_data_hex) >= 128:
             second_half = report_data_hex[64:128]
@@ -356,7 +399,7 @@ def verify_agent(
     try:
         resp = requests.get(workload_url, timeout=15, verify=True)
         resp.raise_for_status()
-        docker_compose = _extract_docker_compose(resp.text)
+        docker_compose = resp.text
         checks["workload_fetched"] = True
 
         workload_result = verify_workload(cpu_data, docker_compose)
@@ -395,13 +438,13 @@ def verify_agent(
         checks.get("cpu_quote_fetched"),
         checks.get("cpu_quote_verified"),
         checks.get("tls_binding_verified"),
+        checks.get("gpu_quote_fetched"),
+        checks.get("gpu_quote_verified"),
+        checks.get("gpu_binding_verified"),
         checks.get("workload_binding_verified", False),
     ]
     if check_proof_of_cloud:
         required_checks.append(checks.get("proof_of_cloud_verified", False))
-    if gpu_present:
-        required_checks.append(checks.get("gpu_quote_verified"))
-        required_checks.append(checks.get("gpu_binding_verified"))
 
     valid = all(required_checks)
 

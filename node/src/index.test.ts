@@ -1,7 +1,10 @@
 import { describe, it, mock, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash, X509Certificate } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -11,12 +14,15 @@ import {
   checkCpuAttestation,
   checkSecretVm,
   checkProofOfCloud,
+  formatWorkloadResult,
 } from "./index.js";
 import type { AttestationResult } from "./types.js";
 import { resetPeersCacheForTests } from "./proofOfCloud.js";
-import { parseVmUrl } from "./vm.js";
+import { resolveAgentSecretVmEndpoints } from "./agent.js";
+import { checkSecretVmWithRuntime, parseVmUrl, resolveSecretVmEndpoints } from "./vm.js";
+import type { SecretVmRuntime } from "./vm.js";
 import { calculateRtmr3 } from "./rtmr.js";
-import { createHash } from "node:crypto";
+import { fetchDockerCompose, tlsCertSpkiSha256 } from "./url.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TEST_DATA = join(__dirname, "..", "..", "test-data");
@@ -339,6 +345,313 @@ describe("checkSecretVm", () => {
       const { host, port } = parseVmUrl("https://myhost");
       assert.equal(host, "myhost");
       assert.equal(port, 29343);
+    });
+
+    it("preserves an explicitly declared default HTTPS port", () => {
+      const { host, port } = parseVmUrl("https://myhost:443");
+      assert.equal(host, "myhost");
+      assert.equal(port, 443);
+    });
+
+    it("resolves separate attestation and TLS binding endpoints", () => {
+      const endpoints = resolveSecretVmEndpoints(
+        "https://myhost:29343",
+        "https://myhost:21434",
+      );
+      assert.equal(endpoints.attestation.host, "myhost");
+      assert.equal(endpoints.attestation.port, 29343);
+      assert.equal(endpoints.attestation.baseUrl, "https://myhost:29343");
+      assert.equal(endpoints.tls.host, "myhost");
+      assert.equal(endpoints.tls.port, 21434);
+      assert.equal(endpoints.tls.baseUrl, "https://myhost:21434");
+    });
+
+    it("preserves attestation path prefixes", () => {
+      const endpoints = resolveSecretVmEndpoints(
+        "https://attestation.example.com/teequote",
+        "https://api.example.com",
+      );
+      assert.equal(endpoints.attestation.baseUrl, "https://attestation.example.com:29343/teequote");
+      assert.equal(endpoints.tls.baseUrl, "https://api.example.com:443");
+    });
+
+    it("rejects concrete resource paths as attestation service URLs", async () => {
+      for (const resource of ["cpu", "gpu", "docker-compose"]) {
+        assert.throws(
+          () => resolveSecretVmEndpoints(`https://attestation.example.com:29343/${resource}`),
+          new RegExp(`concrete /${resource} resource path`),
+        );
+      }
+
+      const result = await checkSecretVm("https://attestation.example.com:29343/cpu");
+      assert.equal(result.valid, false);
+      assert.match(result.errors[0] ?? "", /service base URL/);
+    });
+
+    it("fetches docker-compose as exact bytes without HTML dewrapping", async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = (async (): Promise<Response> => {
+        return new Response("<pre>services:\n  app: {}\n</pre>", { status: 200 });
+      }) as typeof fetch;
+
+      try {
+        assert.equal(
+          await fetchDockerCompose("attestation.example.com:29343"),
+          "<pre>services:\n  app: {}\n</pre>",
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it("requires an explicit single inference service for agent TLS binding", () => {
+      const resolved = resolveAgentSecretVmEndpoints([
+        { name: "teequote", endpoint: "agent.example.com" },
+        { name: "status", endpoint: "status.example.com" },
+        { name: "inference", endpoint: "agent.example.com" },
+      ]);
+
+      assert.equal(resolved.error, undefined);
+      assert.equal(resolved.tlsBindingServiceName, "inference");
+      assert.equal(resolved.endpoints?.attestation.baseUrl, "https://agent.example.com:29343");
+      assert.equal(resolved.endpoints?.tls.baseUrl, "https://agent.example.com:443");
+    });
+
+    it("rejects agent metadata without an explicit inference service", () => {
+      const resolved = resolveAgentSecretVmEndpoints([
+        { name: "teequote", endpoint: "agent.example.com:29343" },
+        { name: "status", endpoint: "api.example.com" },
+      ]);
+
+      assert.match(resolved.error ?? "", /No inference service endpoint/);
+    });
+
+    it("checks TLS on the service endpoint and fetches quotes from the attestation endpoint", async () => {
+      const tlsHex = "11".repeat(32);
+      const gpuNonce = "22".repeat(32);
+      const cpuQuote = "cpu-quote";
+      const gpuQuote = JSON.stringify({ nonce: gpuNonce, evidence_list: [] });
+      const dockerCompose = "services:\n  app:\n    image: example/app@sha256:abc";
+      const fetchedUrls: string[] = [];
+      const tlsCalls: Array<{ host: string; port: number; servername?: string }> = [];
+      const runtime: SecretVmRuntime = {
+        fetch: (async (url: any): Promise<Response> => {
+          const href = String(url);
+          fetchedUrls.push(href);
+          switch (href) {
+            case "https://attest.example:29343/cpu":
+              return new Response(cpuQuote);
+            case "https://attest.example:29343/gpu":
+              return new Response(gpuQuote);
+            case "https://attest.example:29343/docker-compose":
+              return new Response(dockerCompose);
+            default:
+              return new Response("unexpected endpoint", { status: 404 });
+          }
+        }) as typeof fetch,
+        getTlsCertFingerprint: async (host, port, servername) => {
+          tlsCalls.push({ host, port, servername });
+          return Buffer.from(tlsHex, "hex");
+        },
+        checkCpuAttestation: async (data) => {
+          assert.equal(data, cpuQuote);
+          return {
+            valid: true,
+            attestationType: "TDX",
+            checks: { quote_parsed: true, quote_verified: true },
+            report: { report_data: tlsHex + gpuNonce },
+            errors: [],
+          };
+        },
+        checkNvidiaGpuAttestation: async (data) => {
+          assert.equal(data, gpuQuote);
+          return {
+            valid: true,
+            attestationType: "NVIDIA-GPU",
+            checks: { gpu_attestation_verified: true },
+            report: { overall_result: true },
+            errors: [],
+          };
+        },
+        verifyWorkload: async (data, compose) => {
+          assert.equal(data, cpuQuote);
+          assert.equal(compose, dockerCompose);
+          return {
+            status: "authentic_match",
+            template_name: "prod-test",
+            artifacts_ver: "v0.0.0",
+          };
+        },
+      };
+
+      const result = await checkSecretVmWithRuntime(
+        "https://attest.example:29343",
+        { tlsUrl: "https://api.example" },
+        runtime,
+      );
+
+      assert.equal(result.valid, true);
+      assert.deepEqual(tlsCalls, [
+        { host: "api.example", port: 443, servername: "api.example" },
+      ]);
+      assert.deepEqual(fetchedUrls, [
+        "https://attest.example:29343/cpu",
+        "https://attest.example:29343/gpu",
+        "https://attest.example:29343/docker-compose",
+      ]);
+      assert.equal(result.report.attestation_url, "https://attest.example:29343");
+      assert.equal(result.report.tls_binding_url, "https://api.example:443");
+      assert.equal(result.checks.tls_binding_verified, true);
+      assert.equal(result.checks.gpu_quote_verified, true);
+      assert.equal(result.checks.gpu_binding_verified, true);
+      assert.equal(result.checks.workload_binding_verified, true);
+    });
+
+    it("passes exact docker-compose response bytes into workload verification", async () => {
+      const tlsHex = "11".repeat(32);
+      const gpuNonce = "22".repeat(32);
+      const cpuQuote = "cpu-quote";
+      const gpuQuote = JSON.stringify({ nonce: gpuNonce, evidence_list: [] });
+      const htmlCompose = "<pre>services:\n  app: {}\n</pre>";
+      const runtime: SecretVmRuntime = {
+        fetch: (async (url: any): Promise<Response> => {
+          switch (String(url)) {
+            case "https://attest.example:29343/cpu":
+              return new Response(cpuQuote);
+            case "https://attest.example:29343/gpu":
+              return new Response(gpuQuote);
+            case "https://attest.example:29343/docker-compose":
+              return new Response(htmlCompose);
+            default:
+              return new Response("unexpected endpoint", { status: 404 });
+          }
+        }) as typeof fetch,
+        getTlsCertFingerprint: async () => Buffer.from(tlsHex, "hex"),
+        checkCpuAttestation: async () => ({
+          valid: true,
+          attestationType: "TDX",
+          checks: { quote_parsed: true, quote_verified: true },
+          report: { report_data: tlsHex + gpuNonce },
+          errors: [],
+        }),
+        checkNvidiaGpuAttestation: async () => ({
+          valid: true,
+          attestationType: "NVIDIA-GPU",
+          checks: { gpu_attestation_verified: true },
+          report: { overall_result: true },
+          errors: [],
+        }),
+        verifyWorkload: async (_data, compose) => {
+          assert.equal(compose, htmlCompose);
+          return { status: "authentic_mismatch" };
+        },
+      };
+
+      const result = await checkSecretVmWithRuntime(
+        "https://attest.example:29343",
+        { tlsUrl: "https://api.example" },
+        runtime,
+      );
+
+      assert.equal(result.valid, false);
+      assert.equal(result.report.docker_compose, htmlCompose);
+      assert.match(result.errors.join("\n"), /Workload mismatch/);
+    });
+
+    it("fails closed when GPU evidence is unavailable", async () => {
+      const tlsHex = "11".repeat(32);
+      const cpuQuote = "cpu-quote";
+      const runtime: SecretVmRuntime = {
+        fetch: (async (url: any): Promise<Response> => {
+          switch (String(url)) {
+            case "https://attest.example:29343/cpu":
+              return new Response(cpuQuote);
+            case "https://attest.example:29343/gpu":
+              return new Response(JSON.stringify({ error: "GPU attestation not available" }));
+            case "https://attest.example:29343/docker-compose":
+              return new Response("services:\n  app: {}\n");
+            default:
+              return new Response("unexpected endpoint", { status: 404 });
+          }
+        }) as typeof fetch,
+        getTlsCertFingerprint: async () => Buffer.from(tlsHex, "hex"),
+        checkCpuAttestation: async () => ({
+          valid: true,
+          attestationType: "TDX",
+          checks: { quote_parsed: true, quote_verified: true },
+          report: { report_data: tlsHex + "22".repeat(32) },
+          errors: [],
+        }),
+        checkNvidiaGpuAttestation: async () => {
+          throw new Error("GPU verifier should not run without fetched evidence");
+        },
+        verifyWorkload: async () => ({ status: "authentic_match" }),
+      };
+
+      const result = await checkSecretVmWithRuntime(
+        "https://attest.example:29343",
+        { tlsUrl: "https://api.example" },
+        runtime,
+      );
+
+      assert.equal(result.valid, false);
+      assert.equal(result.checks.gpu_quote_fetched, false);
+      assert.equal(result.checks.gpu_quote_verified, false);
+      assert.equal(result.checks.gpu_binding_verified, false);
+      assert.match(result.errors.join("\n"), /GPU attestation not available/);
+    });
+
+    it("binds to the certificate SPKI, not the reissued leaf certificate DER", () => {
+      const dir = mkdtempSync(join(tmpdir(), "secretvm-spki-"));
+      try {
+        const keyPath = join(dir, "key.pem");
+        const cert1Path = join(dir, "cert1.pem");
+        const cert2Path = join(dir, "cert2.pem");
+        execFileSync("openssl", ["genrsa", "-out", keyPath, "2048"]);
+        execFileSync("openssl", [
+          "req",
+          "-new",
+          "-x509",
+          "-key",
+          keyPath,
+          "-out",
+          cert1Path,
+          "-days",
+          "1",
+          "-subj",
+          "/CN=secretvm.test",
+          "-set_serial",
+          "1",
+        ]);
+        execFileSync("openssl", [
+          "req",
+          "-new",
+          "-x509",
+          "-key",
+          keyPath,
+          "-out",
+          cert2Path,
+          "-days",
+          "1",
+          "-subj",
+          "/CN=secretvm.test",
+          "-set_serial",
+          "2",
+        ]);
+
+        const cert1 = new X509Certificate(readFileSync(cert1Path));
+        const cert2 = new X509Certificate(readFileSync(cert2Path));
+        assert.notEqual(
+          createHash("sha256").update(cert1.raw).digest("hex"),
+          createHash("sha256").update(cert2.raw).digest("hex"),
+        );
+        assert.equal(
+          tlsCertSpkiSha256(cert1).toString("hex"),
+          tlsCertSpkiSha256(cert2).toString("hex"),
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 
@@ -763,5 +1076,22 @@ describe("calculateRtmr3", () => {
     const fromBytes = calculateRtmr3(compose, rootfs, digestFromBytes);
     const fromHex = calculateRtmr3(compose, rootfs, dockerFilesSha256);
     assert.equal(fromBytes, fromHex);
+  });
+});
+
+describe("formatWorkloadResult", () => {
+  it("formats the docker-compose URL from the parsed attestation base URL", () => {
+    const out = formatWorkloadResult(
+      {
+        status: "authentic_match",
+        template_name: "small",
+        artifacts_ver: "v0.0.0",
+        env: "prod",
+      },
+      "https://my-vm:21434/teequote",
+    );
+
+    assert.match(out, /https:\/\/my-vm:21434\/teequote\/docker-compose/);
+    assert.doesNotMatch(out, /:21434:29343\/docker-compose/);
   });
 });

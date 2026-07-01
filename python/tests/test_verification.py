@@ -7,6 +7,11 @@ They require network access.
 """
 
 import json
+import socket
+import ssl
+import subprocess
+import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,6 +19,7 @@ import pytest
 
 from secretvm.verify import (
     AttestationResult,
+    WorkloadResult,
     check_sev_cpu_attestation,
     check_cpu_attestation,
     check_nvidia_gpu_attestation,
@@ -27,6 +33,66 @@ from secretvm.verify import (
 )
 
 FIXTURES_DIR = Path(__file__).resolve().parent.parent.parent / "test-data"
+
+
+def _with_untrusted_tls_server(fn):
+    """Run fn(port) against a one-shot local TLS server with an untrusted cert."""
+    with tempfile.TemporaryDirectory() as tmp:
+        cert_path = Path(tmp) / "cert.pem"
+        key_path = Path(tmp) / "key.pem"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-keyout",
+                str(key_path),
+                "-out",
+                str(cert_path),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        listener.settimeout(10)
+        port = listener.getsockname()[1]
+
+        def serve():
+            with listener:
+                try:
+                    conn, _ = listener.accept()
+                    with conn:
+                        try:
+                            with context.wrap_socket(conn, server_side=True) as tls_conn:
+                                tls_conn.recv(1)
+                        except ssl.SSLError:
+                            pass
+                except OSError:
+                    pass
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            fn(port)
+        finally:
+            try:
+                listener.close()
+            except OSError:
+                pass
+            thread.join(timeout=2)
 
 
 @pytest.fixture
@@ -352,6 +418,36 @@ class TestSecretVm:
         assert result.checks.get("tls_cert_fetched") is False
         assert len(result.errors) > 0
 
+    def test_rejects_untrusted_tls_certificate(self):
+        def run(port):
+            result = check_secret_vm(f"https://localhost:{port}")
+            assert result.valid is False
+            assert result.attestation_type == "SECRET-VM"
+            assert result.checks["tls_cert_fetched"] is False
+            assert any("Failed to get TLS certificate" in e for e in result.errors)
+
+        _with_untrusted_tls_server(run)
+
+    def test_agent_rejects_untrusted_inference_tls_certificate(self):
+        from secretvm.verify import AgentMetadata, AgentService, verify_agent
+
+        def run(port):
+            result = verify_agent(AgentMetadata(
+                name="agent",
+                supported_trust=["tee-attestation"],
+                services=[
+                    AgentService(name="teequote", endpoint="https://attest.example:29343"),
+                    AgentService(name="inference", endpoint=f"https://localhost:{port}"),
+                ],
+            ))
+
+            assert result.valid is False
+            assert result.checks["metadata_valid"] is True
+            assert result.checks["tls_cert_fetched"] is False
+            assert any("Failed to get TLS certificate" in e for e in result.errors)
+
+        _with_untrusted_tls_server(run)
+
     def test_invalid_url(self):
         result = check_secret_vm("")
         assert result.valid is False
@@ -363,6 +459,36 @@ class TestSecretVm:
         assert _parse_vm_url("myhost:1234") == ("myhost", 1234)
         assert _parse_vm_url("https://myhost:5555") == ("myhost", 5555)
         assert _parse_vm_url("https://myhost") == ("myhost", 29343)
+
+    def test_url_parsing_rejects_concrete_resource_paths(self):
+        from secretvm.verify.vm import _parse_service_base_url
+
+        for url in [
+            "https://myhost:29343/cpu",
+            "https://myhost:29343/teequote%2Fcpu",
+        ]:
+            with pytest.raises(ValueError):
+                _parse_service_base_url(url)
+
+    def test_fetch_vm_endpoint_preserves_path_prefix(self):
+        from secretvm.verify.url import fetch_vm_endpoint
+
+        with patch("secretvm.verify.url.requests.get") as mock_get:
+            mock_get.return_value = _mock_response("quote")
+
+            assert fetch_vm_endpoint("https://myhost:443/teequote", "cpu") == "quote"
+
+        mock_get.assert_called_once_with(
+            "https://myhost:443/teequote/cpu",
+            timeout=15,
+            verify=True,
+        )
+
+    def test_fetch_vm_endpoint_rejects_concrete_resource_path(self):
+        from secretvm.verify.url import fetch_vm_endpoint
+
+        with pytest.raises(ValueError):
+            fetch_vm_endpoint("https://myhost:29343/cpu", "cpu")
 
     def test_vm_with_gpu_all_pass(self):
         tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass, poc_pass = _make_test_data()
@@ -393,7 +519,32 @@ class TestSecretVm:
         assert result.checks["proof_of_cloud_verified"] is True
         assert result.errors == []
 
-    def test_vm_without_gpu(self):
+    def test_vm_uses_exact_docker_compose_response(self):
+        tls_fp, cpu_result, gpu_result, gpu_json, _, _, _ = _make_test_data()
+        html_compose = "<pre>services:\n  app: {}\n</pre>"
+        workload_mismatch = WorkloadResult(status="authentic_mismatch")
+
+        def verify_exact(_quote, compose, *_args):
+            assert compose == html_compose
+            return workload_mismatch
+
+        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+             patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
+             patch(f"{_M}.verify_workload", side_effect=verify_exact), \
+             patch(f"{_M}.requests") as mock_req:
+            mock_req.get.side_effect = [
+                _mock_response("fake_cpu_quote"),
+                _mock_response(gpu_json, content_type="application/json"),
+                _mock_response(html_compose),
+            ]
+            result = check_secret_vm("https://test-vm:29343")
+
+        assert result.valid is False
+        assert result.report["docker_compose"] == html_compose
+        assert any("Workload mismatch" in e for e in result.errors)
+
+    def test_vm_without_gpu_fails_closed(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
@@ -408,13 +559,14 @@ class TestSecretVm:
             ]
             result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
 
-        assert result.valid is True
+        assert result.valid is False
         assert result.checks["tls_binding_verified"] is True
         assert result.checks["gpu_quote_fetched"] is False
-        assert "gpu_quote_verified" not in result.checks
-        assert "gpu_binding_verified" not in result.checks
+        assert result.checks["gpu_quote_verified"] is False
+        assert result.checks["gpu_binding_verified"] is False
         assert result.checks["workload_binding_verified"] is True
         assert result.checks["proof_of_cloud_verified"] is True
+        assert any("GPU attestation not available" in e for e in result.errors)
 
     def test_proof_of_cloud_failure(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, _ = _make_test_data()
@@ -447,7 +599,7 @@ class TestSecretVm:
 
     def test_tls_binding_failure(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
-        # Use wrong TLS fingerprint
+        # Use wrong TLS SPKI fingerprint
         wrong_tls = bytes.fromhex("ff" * 32)
 
         with patch(f"{_M}._get_tls_cert_fingerprint", return_value=wrong_tls), \
