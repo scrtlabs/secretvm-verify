@@ -9,6 +9,8 @@ import urllib.request
 from dataclasses import asdict
 from secretvm.verify import check_secret_vm
 
+DEFAULT_ATTESTATION_PORT = 21434
+
 def _get_opt(name: str):
     if name in sys.argv:
         idx = sys.argv.index(name)
@@ -16,7 +18,7 @@ def _get_opt(name: str):
             return sys.argv[idx + 1]
     return None
 
-def get_cert_dns(ip, port=29343):
+def get_cert_dns(ip, port=DEFAULT_ATTESTATION_PORT):
     try:
         cmd1 = subprocess.Popen(
             ["openssl", "s_client", "-connect", f"{ip}:{port}", "-servername", "x"],
@@ -37,6 +39,15 @@ def get_cert_dns(ip, port=29343):
         pass
     return None
 
+
+def _format_check_line(name, passed):
+    if name == "gpu_quote_fetched" and not passed:
+        status = "FAIL (required GPU evidence fetch failed)"
+    else:
+        status = "PASS" if passed else "FAIL"
+    return f"  {name + ':':<35} {status}"
+
+
 def main():
     if "--version" in sys.argv or "-V" in sys.argv:
         from importlib.metadata import PackageNotFoundError, version as _version
@@ -48,7 +59,7 @@ def main():
 
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--strict] [--proof-of-cloud] [--show-compose] [--docker-files <tar> | --docker-files-sha256 <hex>] [--version|-V]")
-        print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
+        print(f"  e.g. {sys.argv[0]} https://my-vm:21434")
         print(f"  e.g. {sys.argv[0]} --k8scluster my-vm.scrtlabs.com")
         print(f"  Default output is the per-check PASS/FAIL breakdown. Use --json for")
         print(f"  minimal JSON (no report fields), --raw for full JSON, or --verbose for")
@@ -136,7 +147,7 @@ def main():
             try:
                 # Pass into the existing verification check
                 node_result = check_secret_vm(
-                    f"https://{verify_target}",
+                    f"https://{verify_target}:{DEFAULT_ATTESTATION_PORT}",
                     product=product,
                     reload_amd_kds=reload_amd_kds,
                     check_proof_of_cloud=check_poc,
@@ -147,11 +158,7 @@ def main():
 
                 print("Checks:")
                 for name, passed in node_result.checks.items():
-                    if name == "gpu_quote_fetched" and not passed:
-                        print(f"  {'gpu:':<35} GPU not present")
-                        continue
-                    status = "PASS" if passed else "FAIL"
-                    print(f"  {name + ':':<35} {status}")
+                    print(_format_check_line(name, passed))
 
                 if node_result.errors:
                     print("\nErrors:")
@@ -202,11 +209,7 @@ def main():
     # --verbose to keep the default output focused on the verdict.
     print("Checks:")
     for name, passed in result.checks.items():
-        if name == "gpu_quote_fetched" and not passed:
-            print(f"  {'gpu:':<35} GPU not present")
-            continue
-        status = "PASS" if passed else "FAIL"
-        print(f"  {name + ':':<35} {status}")
+        print(_format_check_line(name, passed))
 
     if verbose:
         report = result.report

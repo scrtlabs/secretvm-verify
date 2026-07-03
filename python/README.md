@@ -30,12 +30,12 @@ The simplest way to verify a VM — handles CPU detection, GPU detection, and al
 ```python
 from secretvm.verify import check_secret_vm
 
-result = check_secret_vm("my-vm.example.com")
+result = check_secret_vm("https://my-vm.example.com:21434")
 
 print(result.valid)           # True if all checks pass
 print(result.attestation_type) # "SECRET-VM"
 print(result.checks)          # {"cpu_quote_fetched": True, "tls_cert_fetched": True, ...}
-print(result.report)          # {"tls_fingerprint": "...", "cpu": {...}, "cpu_type": "TDX", ...}
+print(result.report)          # {"tls_spki_fingerprint": "...", "cpu": {...}, "cpu_type": "TDX", ...}
 print(result.errors)          # [] if no errors
 ```
 
@@ -62,14 +62,14 @@ from secretvm.verify import resolve_agent, verify_agent
 # Step 1: Resolve agent metadata from the blockchain
 metadata = resolve_agent(38114, "base")
 print(metadata.name)             # Agent name
-print(metadata.services)         # [AgentService(name="teequote", endpoint="..."), ...]
+print(metadata.services)         # [AgentService(name="teequote", endpoint="..."), AgentService(name="inference", endpoint="..."), ...]
 print(metadata.supported_trust)  # ["tee-attestation"]
 
 # Step 2: Verify the agent's TEE attestation
 result = verify_agent(metadata)
 ```
 
-**RPC configuration:** Set `SECRETVM_RPC_BASE` (or `SECRETVM_RPC_<CHAIN>`) environment variable to use your own RPC endpoint. Falls back to public RPCs if not set.
+**RPC configuration:** Set `SECRETVM_RPC_BASE` (or `SECRETVM_RPC_<CHAIN>`) or `SECRETVM_RPC_URL` before using agent resolution. No default RPCs are shipped with the package.
 
 ### Resolve SecretVM version from a quote
 
@@ -143,15 +143,15 @@ All functions return an `AttestationResult` with these fields:
 
 #### `check_secret_vm(url, product="", reload_amd_kds=False, check_proof_of_cloud=False)`
 
-End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GPU quotes, verifies both, and checks TLS and GPU bindings.
+End-to-end Secret VM verification. Connects to the attestation service base URL, fetches CPU and GPU quotes, verifies both, and checks TLS SPKI and GPU bindings. If `url` has no port, the attestation service defaults to port `29343`; explicit ports are preserved.
 
 **Parameters:**
-- `url` — VM address (e.g., `"my-vm.example.com"`, `"https://my-vm:29343"`)
+- `url` — VM attestation service base URL (e.g., `"https://my-vm:21434"`, `"https://my-vm/teequote"`)
 - `product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
 - `reload_amd_kds` — If `True`, bypass the AMD KDS cache (no effect on TDX).
 - `check_proof_of_cloud` — If `True`, also query the trust-server peer network to confirm the machine is whitelisted by Proof of Cloud. Opt-in; off by default.
 
-The returned `result.report["docker_compose"]` contains the raw docker-compose the VM served.
+The returned `result.report["docker_compose"]` contains the exact raw docker-compose bytes the VM served.
 
 #### `check_cpu_attestation(data, product="")`
 
@@ -216,7 +216,7 @@ Resolves an agent's metadata from the on-chain registry contract. Returns an `Ag
 
 #### `verify_agent(metadata)`
 
-Verifies an ERC-8004 agent given its metadata. Discovers teequote/workload endpoints and runs the full verification flow.
+Verifies an ERC-8004 agent given its metadata. The metadata must include exactly one `teequote` service for attestation and exactly one `inference` service for the public TLS endpoint whose SPKI is bound in the quote. A `workload` service is optional, but if present it must also be unique and must be a service-base URL; verification fetches `/docker-compose` from that base.
 
 ### `AgentMetadata`
 
@@ -247,10 +247,10 @@ Supported chains: ethereum, base, arbitrum, sepolia, polygon, bnb, gnosis, linea
 ```bash
 cd python
 pip install -e .
-python check_vm.py https://my-vm:29343
-python check_vm.py https://my-vm:29343 --json    # minimal JSON
-python check_vm.py https://my-vm:29343 --raw     # full JSON with parsed report
-python check_vm.py https://my-vm:29343 --product Genoa
+python check_vm.py https://my-vm:21434
+python check_vm.py https://my-vm:21434 --json    # minimal JSON
+python check_vm.py https://my-vm:21434 --raw     # full JSON with parsed report
+python check_vm.py https://my-vm:21434 --product Genoa
 ```
 
 ## External services
