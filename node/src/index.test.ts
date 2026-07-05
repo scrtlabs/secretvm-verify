@@ -13,6 +13,7 @@ import {
   checkProofOfCloud,
 } from "./index.js";
 import type { AttestationResult } from "./types.js";
+import { orderChecks } from "./types.js";
 import { resetPeersCacheForTests } from "./proofOfCloud.js";
 import { parseVmUrl } from "./vm.js";
 import { calculateRtmr3 } from "./rtmr.js";
@@ -392,6 +393,25 @@ describe("checkSecretVm", () => {
       const { reportData } = makeTestData("aa".repeat(32), nonceHex);
       const secondHalf = reportData.slice(64, 128);
       assert.equal(secondHalf, nonceHex);
+    });
+
+    it("enforce-gpu: gpu_present is ordered between tls_binding and gpu_quote_fetched", () => {
+      // The enforce-gpu path records a `gpu_present` check; it must render in the
+      // canonical position (right after the TLS binding, before the GPU details).
+      const ordered = Object.keys(
+        orderChecks({
+          gpu_quote_fetched: false,
+          tls_binding_verified: true,
+          gpu_present: false,
+          cpu_quote_verified: true,
+        }),
+      );
+      assert.deepEqual(ordered, [
+        "cpu_quote_verified",
+        "tls_binding_verified",
+        "gpu_present",
+        "gpu_quote_fetched",
+      ]);
     });
   });
 });

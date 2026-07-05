@@ -34,6 +34,7 @@ export async function checkSecretVm(
   checkProofOfCloud = false,
   dockerFilesInput?: DockerFilesInput,
   strict = false,
+  enforceGpu = false,
 ): Promise<AttestationResult> {
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
@@ -145,6 +146,19 @@ export async function checkSecretVm(
     }
   }
 
+  // 5b. GPU enforcement (opt-in): when enforceGpu is set, a GPU must be
+  // present. Record it as its own check so a CPU-only VM fails closed instead
+  // of silently passing. (When enforceGpu is off the check is omitted, so
+  // default behavior is unchanged.)
+  if (enforceGpu) {
+    checks.gpu_present = gpuPresent;
+    if (!gpuPresent) {
+      errors.push(
+        "GPU attestation required (--enforce-gpu) but this VM exposes no GPU",
+      );
+    }
+  }
+
   // 6. Fetch and verify workload (docker-compose)
   try {
     const resp = await fetch(`${baseUrl}/docker-compose`);
@@ -190,6 +204,9 @@ export async function checkSecretVm(
   ];
   if (checkProofOfCloud) {
     requiredChecks.push(!!checks.proof_of_cloud_verified);
+  }
+  if (enforceGpu) {
+    requiredChecks.push(!!checks.gpu_present);
   }
   if (gpuPresent) {
     requiredChecks.push(!!checks.gpu_quote_verified);

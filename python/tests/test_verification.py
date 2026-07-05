@@ -415,6 +415,49 @@ class TestSecretVm:
         assert "gpu_binding_verified" not in result.checks
         assert result.checks["workload_binding_verified"] is True
         assert result.checks["proof_of_cloud_verified"] is True
+        # enforce_gpu defaults off, so no gpu_present check is recorded.
+        assert "gpu_present" not in result.checks
+
+    def test_enforce_gpu_without_gpu_fails(self):
+        tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, _ = _make_test_data()
+
+        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+             patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.requests") as mock_req:
+            mock_req.get.side_effect = [
+                _mock_response("fake_cpu_quote"),
+                _mock_response(no_gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
+            ]
+            result = check_secret_vm("https://test-vm:29343", enforce_gpu=True)
+
+        # Everything else passes, but the missing GPU fails the overall verdict.
+        assert result.valid is False
+        assert result.checks["gpu_present"] is False
+        assert result.checks["tls_binding_verified"] is True
+        assert result.checks["workload_binding_verified"] is True
+        assert any("--enforce-gpu" in e for e in result.errors)
+
+    def test_enforce_gpu_with_gpu_passes(self):
+        tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass, _ = _make_test_data()
+
+        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+             patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload_pass), \
+             patch(f"{_M}.requests") as mock_req:
+            mock_req.get.side_effect = [
+                _mock_response("fake_cpu_quote"),
+                _mock_response(gpu_json, content_type="application/json"),
+                _mock_response("version: '3'\nservices: {}"),
+            ]
+            result = check_secret_vm("https://test-vm:29343", enforce_gpu=True)
+
+        assert result.valid is True
+        assert result.checks["gpu_present"] is True
+        assert result.checks["gpu_quote_verified"] is True
+        assert result.checks["gpu_binding_verified"] is True
 
     def test_proof_of_cloud_failure(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, _ = _make_test_data()

@@ -47,7 +47,7 @@ def main():
         sys.exit(0)
 
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--strict] [--proof-of-cloud] [--show-compose] [--docker-files <tar> | --docker-files-sha256 <hex>] [--version|-V]")
+        print(f"Usage: {sys.argv[0]} <url> [--product NAME] [--json|--raw] [--verbose|-v] [--reload-amd-kds] [--strict] [--proof-of-cloud] [--enforce-gpu] [--show-compose] [--docker-files <tar> | --docker-files-sha256 <hex>] [--version|-V]")
         print(f"  e.g. {sys.argv[0]} https://my-vm:29343")
         print(f"  e.g. {sys.argv[0]} --k8scluster my-vm.scrtlabs.com")
         print(f"  Default output is the per-check PASS/FAIL breakdown. Use --json for")
@@ -59,6 +59,8 @@ def main():
         print(f"  instead of falling back to a stale cached entry. No effect on TDX.")
         print(f"  --proof-of-cloud also asks the community trust-server peers to confirm")
         print(f"  the machine is on the Proof of Cloud whitelist (opt-in; off by default).")
+        print(f"  --enforce-gpu requires a verifiable GPU attestation; a CPU-only VM")
+        print(f"  (no /gpu endpoint) then fails instead of passing.")
         print(f"  --show-compose prints the docker-compose.yaml that was verified,")
         print(f"  after the check list.")
         print(f"  --docker-files / --docker-files-sha256 supply the Dockerfiles archive")
@@ -74,6 +76,7 @@ def main():
     reload_amd_kds = "--reload-amd-kds" in sys.argv
     strict = "--strict" in sys.argv
     check_poc = "--proof-of-cloud" in sys.argv
+    enforce_gpu = "--enforce-gpu" in sys.argv
     show_compose = "--show-compose" in sys.argv
 
     docker_files_path = _get_opt("--docker-files")
@@ -143,6 +146,7 @@ def main():
                     docker_files=docker_files_bytes,
                     docker_files_sha256=docker_files_sha256,
                     strict=strict,
+                    enforce_gpu=enforce_gpu,
                 )
 
                 print("Checks:")
@@ -186,6 +190,7 @@ def main():
         docker_files=docker_files_bytes,
         docker_files_sha256=docker_files_sha256,
         strict=strict,
+        enforce_gpu=enforce_gpu,
     )
 
     if raw:
