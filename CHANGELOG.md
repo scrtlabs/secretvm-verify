@@ -2,6 +2,18 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.11.0] — 2026-07-06
+
+### Added
+
+- **GPU enforcement (`--enforce-gpu` / `enforce_gpu=True`)** — opt-in flag that requires a verifiable NVIDIA GPU attestation. A SecretVM whose `/gpu` endpoint returns no attestation now fails verification (a `gpu_present` check is recorded and folded into the required set) instead of passing as a CPU-only VM. Default is off, so existing behaviour is unchanged. Available on `checkSecretVm` / `check_secret_vm` (Node and Python, sync and async) and as a CLI flag; applies to `--secretvm`, `--k8scluster`, and the bare-URL form.
+
+## [0.10.0] — 2026-06-30
+
+### Changed
+
+- **Proof of Cloud now verifies against the community trust-server peer network.** `checkProofOfCloud` / `check_proof_of_cloud` (and the `--proof-of-cloud` flag) now POST the CPU quote to the `/check_quote` endpoint of the community-vetted trust-server peers (`github.com/proofofcloud/trust-server`), failing over across peers in list order until the first usable answer, instead of calling a single SCRT Labs endpoint. The peer list ships bundled and is best-effort refreshed from GitHub once per process. The result reports `{whitelisted, machine_id, revoked, revoked_at, trust_server, peers_tried}`.
+
 ## [0.9.2] — 2026-05-27
 
 ### Added
