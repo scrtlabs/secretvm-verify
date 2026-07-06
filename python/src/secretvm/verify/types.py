@@ -35,6 +35,7 @@ _CHECK_ORDER = (
     # VM-level rollup
     "cpu_quote_verified",
     "tls_binding_verified",
+    "gpu_present",
     "gpu_quote_fetched",
     "gpu_quote_verified",
     "gpu_binding_verified",

@@ -122,6 +122,10 @@ if (dockerFilesSha256) {
 // Opt-in proof-of-cloud (POSTs the CPU quote to the community trust-server
 // peers' /check_quote). Off by default across all verbs; pass --proof-of-cloud to enable.
 const checkPoc = getFlag("--proof-of-cloud");
+// When set, require a verifiable GPU attestation: a CPU-only VM (whose /gpu
+// endpoint returns an error) fails instead of passing. Applies to --secretvm,
+// --k8scluster, and the legacy bare-URL form.
+const enforceGpu = getFlag("--enforce-gpu");
 // When set, prints the docker-compose.yaml after the check list so the
 // verifier can see the actual workload that was measured. Works with
 // --secretvm, --verify-workload, --check-agent, --agent.
@@ -206,6 +210,9 @@ Options:
                        instead of falling back to a stale cached entry. Trades
                        availability for freshness. No effect on TDX.
   --proof-of-cloud     Verify if the machine is registered with ProofOfCloud alliance. Optional
+  --enforce-gpu        Require a verifiable GPU attestation. A CPU-only VM (no /gpu
+                       endpoint) fails instead of passing. Works with --secretvm,
+                       --k8scluster, and the bare-URL form.
   --show-compose       Print the docker-compose.yaml that was verified, after the
                        check list. Works with --secretvm, --verify-workload,
                        --check-agent, --agent.
@@ -260,7 +267,7 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput, strict);
+    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput, strict, enforceGpu);
   } else if (getFlag("--cpu")) {
     const quoteData = await getCpuQuote("--cpu");
     const source = vmUrl ? vmUrl : getFlagValue("--cpu") ?? getPositional();
@@ -510,7 +517,7 @@ try {
       console.log(`    Domain:  ${verifyTarget}\n`);
 
       try {
-        const nodeResult = await checkSecretVm(`https://${verifyTarget}`, product, reloadAmdKds, checkPoc, dockerFilesInput, strict);
+        const nodeResult = await checkSecretVm(`https://${verifyTarget}`, product, reloadAmdKds, checkPoc, dockerFilesInput, strict, enforceGpu);
         
         console.log("Checks:");
         for (const [name, passed] of Object.entries(nodeResult.checks)) {
@@ -550,7 +557,7 @@ try {
       process.exit(1);
     }
     if (!jsonOut) console.log(`Verifying ${url}\n`);
-    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput);
+    result = await checkSecretVm(url, product, reloadAmdKds, checkPoc, dockerFilesInput, strict, enforceGpu);
   }
 
   // Output

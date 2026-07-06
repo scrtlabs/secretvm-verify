@@ -70,6 +70,7 @@ def check_secret_vm(
     docker_files: Optional[bytes] = None,
     docker_files_sha256: Optional[str] = None,
     strict: bool = False,
+    enforce_gpu: bool = False,
 ) -> AttestationResult:
     """Verify a Secret VM by fetching CPU and GPU attestation from its endpoints.
 
@@ -84,6 +85,9 @@ def check_secret_vm(
         product: AMD product name (only used for SEV-SNP). Auto-detected if empty.
         reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
             VCEK / cert chain / CRL. No effect on TDX VMs (TDX doesn't cache).
+        enforce_gpu: If True, require the VM to expose a verifiable GPU
+            attestation. A VM with no GPU (the /gpu endpoint returns an error)
+            then fails verification instead of passing as a CPU-only VM.
 
     Returns:
         AttestationResult with attestation_type="SECRET-VM".
@@ -186,6 +190,17 @@ def check_secret_vm(
             checks["gpu_binding_verified"] = False
             errors.append("report_data too short for GPU binding check")
 
+    # 5b. GPU enforcement (opt-in): when enforce_gpu is set, a GPU must be
+    # present. Record it as its own check so a CPU-only VM fails closed instead
+    # of silently passing. (When enforce_gpu is off the check is omitted, so
+    # default behavior is unchanged.)
+    if enforce_gpu:
+        checks["gpu_present"] = gpu_present
+        if not gpu_present:
+            errors.append(
+                "GPU attestation required (--enforce-gpu) but this VM exposes no GPU"
+            )
+
     # 6. Fetch and verify workload (docker-compose)
     try:
         resp = pkg.requests.get(f"{base_url}/docker-compose", timeout=15, verify=True)
@@ -233,6 +248,8 @@ def check_secret_vm(
     ]
     if check_proof_of_cloud:
         required_checks.append(checks.get("proof_of_cloud_verified", False))
+    if enforce_gpu:
+        required_checks.append(checks.get("gpu_present", False))
     if gpu_present:
         required_checks.append(checks.get("gpu_quote_verified"))
         required_checks.append(checks.get("gpu_binding_verified"))
@@ -253,6 +270,7 @@ async def check_secret_vm_async(
     docker_files: Optional[bytes] = None,
     docker_files_sha256: Optional[str] = None,
     strict: bool = False,
+    enforce_gpu: bool = False,
 ) -> AttestationResult:
     """Async variant of :func:`check_secret_vm`.
 
@@ -265,5 +283,5 @@ async def check_secret_vm_async(
     """
     return await asyncio.to_thread(
         check_secret_vm, url, product, reload_amd_kds, check_proof_of_cloud,
-        docker_files, docker_files_sha256, strict,
+        docker_files, docker_files_sha256, strict, enforce_gpu,
     )
