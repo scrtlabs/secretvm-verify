@@ -48,7 +48,7 @@ from .proof_of_cloud import check_proof_of_cloud, check_proof_of_cloud_async
 # Public API
 from .vm import check_secret_vm, check_secret_vm_async
 # Internal imports needed for test mocking via _get_pkg() pattern in vm.py
-from .vm import _get_tls_cert_fingerprint, _extract_docker_compose  # noqa: F401
+from .vm import _get_tls_cert_fingerprint, _get_tls_cert_digests, _extract_docker_compose  # noqa: F401
 
 # Workload verification
 from .workload import (

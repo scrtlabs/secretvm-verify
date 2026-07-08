@@ -6,7 +6,10 @@ import { checkCpuAttestation } from "./cpu.js";
 import { checkNvidiaGpuAttestation } from "./nvidia.js";
 import { checkProofOfCloud as checkProofOfCloud_ } from "./proofOfCloud.js";
 import { verifyWorkload } from "./workload.js";
-import { extractDockerCompose, getTlsCertFingerprint } from "./url.js";
+import { classifyTlsBinding, endpointBaseUrl, getTlsCertBinding, parseServiceBaseUrl } from "./url.js";
+import { resolveSecretVmEndpoints, type SecretVmEndpoint } from "./vm.js";
+
+const SECRET_VM_PORT = 29343;
 
 const REGISTRY_ABI = [
   "function tokenURI(uint256 tokenId) view returns (string)",
@@ -32,21 +35,64 @@ function normalizeServices(raw: unknown): AgentService[] {
   });
 }
 
-function findTeequoteEndpoint(services: AgentService[]): string | undefined {
-  for (const s of services) {
-    if (s.name.toLowerCase() === "teequote" && s.endpoint) return s.endpoint;
+function findRequiredUniqueService(
+  services: AgentService[],
+  serviceName: string,
+): { endpoint?: string; error?: string } {
+  const matches = services.filter(
+    (s) => s.name.toLowerCase() === serviceName && s.endpoint.trim() !== "",
+  );
+  if (matches.length === 0) {
+    return { error: `No ${serviceName} service endpoint found in agent metadata` };
   }
-  for (const s of services) {
-    if (s.endpoint && s.endpoint.includes(":29343")) return s.endpoint;
+  if (matches.length > 1) {
+    return { error: `Multiple ${serviceName} service endpoints found in agent metadata` };
   }
-  return undefined;
+  return { endpoint: matches[0]!.endpoint.trim() };
 }
 
-function findWorkloadEndpoint(services: AgentService[]): string | undefined {
-  for (const s of services) {
-    if (s.name.toLowerCase() === "workload" && s.endpoint) return s.endpoint;
+function findOptionalUniqueService(
+  services: AgentService[],
+  serviceName: string,
+): { endpoint?: string; error?: string } {
+  const matches = services.filter(
+    (s) => s.name.toLowerCase() === serviceName && s.endpoint.trim() !== "",
+  );
+  if (matches.length > 1) {
+    return { error: `Multiple ${serviceName} service endpoints found in agent metadata` };
   }
-  return undefined;
+  return { endpoint: matches[0]?.endpoint.trim() };
+}
+
+function endpointIdentity(endpoint: SecretVmEndpoint): string {
+  return `${endpoint.host.toLowerCase()}:${endpoint.port}`;
+}
+
+export function resolveAgentSecretVmEndpoints(
+  services: AgentService[],
+): {
+  endpoints?: ReturnType<typeof resolveSecretVmEndpoints>;
+  tlsBindingServiceName?: string;
+  error?: string;
+} {
+  const teequote = findRequiredUniqueService(services, "teequote");
+  if (teequote.error || !teequote.endpoint) {
+    return { error: teequote.error };
+  }
+
+  const inference = findRequiredUniqueService(services, "inference");
+  if (inference.error || !inference.endpoint) {
+    return { error: inference.error };
+  }
+
+  let endpoints: ReturnType<typeof resolveSecretVmEndpoints>;
+  try {
+    endpoints = resolveSecretVmEndpoints(teequote.endpoint, inference.endpoint);
+  } catch (e: any) {
+    return { error: e.message };
+  }
+
+  return { endpoints, tlsBindingServiceName: "inference" };
 }
 
 function normalizeEndpoint(endpoint: string): string {
@@ -69,7 +115,8 @@ function normalizeEndpoint(endpoint: string): string {
  * RPC URL resolution priority:
  *   1. SECRETVM_RPC_<CHAIN> env var (e.g. SECRETVM_RPC_BASE)
  *   2. SECRETVM_RPC_URL env var (generic fallback)
- *   3. Default public RPC for the chain
+ *
+ * Throws if no RPC URL is configured.
  */
 export async function resolveAgent(
   agentId: number,
@@ -177,38 +224,56 @@ export async function verifyAgent(
     return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
   }
 
-  const teequoteEndpoint = findTeequoteEndpoint(metadata.services);
-  if (!teequoteEndpoint) {
-    errors.push("No teequote service endpoint found in agent metadata");
+  const services = normalizeServices(metadata.services);
+  const agentEndpoints = resolveAgentSecretVmEndpoints(services);
+  if (!agentEndpoints.endpoints) {
+    errors.push(agentEndpoints.error ?? "Could not resolve agent SecretVM endpoints");
     checks.metadata_valid = false;
     return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
+  }
+  const workloadService = findOptionalUniqueService(services, "workload");
+  if (workloadService.error) {
+    errors.push(workloadService.error);
+    checks.metadata_valid = false;
+    return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
+  }
+  let workloadBaseUrl: string | undefined;
+  if (workloadService.endpoint) {
+    try {
+      workloadBaseUrl = endpointBaseUrl(
+        parseServiceBaseUrl(workloadService.endpoint, SECRET_VM_PORT, "workload service endpoint"),
+      );
+    } catch (e: any) {
+      errors.push(e.message);
+      checks.metadata_valid = false;
+      return makeResult("ERC-8004", { checks: orderChecks(checks), report, errors });
+    }
   }
   checks.metadata_valid = true;
 
   // 2. Derive URLs
-  const baseUrl = normalizeEndpoint(teequoteEndpoint).replace(/\/+$/, "");
-  const cpuUrl = baseUrl.endsWith("/cpu") ? baseUrl : `${baseUrl}/cpu`;
-  const gpuUrl = baseUrl.endsWith("/cpu")
-    ? baseUrl.replace(/\/cpu$/, "/gpu")
-    : `${baseUrl}/gpu`;
+  const endpoints = agentEndpoints.endpoints;
+  const baseUrl = endpoints.attestation.baseUrl;
+  const cpuUrl = `${baseUrl}/cpu`;
+  const gpuUrl = `${baseUrl}/gpu`;
 
-  const workloadService = findWorkloadEndpoint(metadata.services);
-  const workloadUrl = workloadService
-    ? normalizeEndpoint(workloadService)
-    : baseUrl.endsWith("/cpu")
-      ? baseUrl.replace(/\/cpu$/, "/docker-compose")
-      : `${baseUrl}/docker-compose`;
+  const workloadUrl = `${workloadBaseUrl ?? baseUrl}/docker-compose`;
 
-  const parsed = new URL(cpuUrl.endsWith("/cpu") ? cpuUrl.replace(/\/cpu$/, "") : cpuUrl);
-  const host = parsed.hostname;
-  const port = parsed.port ? Number(parsed.port) : 443;
+  report.attestation_url = endpoints.attestation.baseUrl;
+  report.tls_binding_url = endpoints.tls.baseUrl;
+  report.tls_binding_service = agentEndpoints.tlsBindingServiceName;
 
-  // 3. TLS certificate fingerprint
-  let tlsFingerprint: Buffer;
+  // 3. TLS certificate digests (SPKI + full certificate, for backward compat)
+  let tlsBinding: Awaited<ReturnType<typeof getTlsCertBinding>>;
   try {
-    tlsFingerprint = await getTlsCertFingerprint(host, port);
+    tlsBinding = await getTlsCertBinding(
+      endpoints.tls.host,
+      endpoints.tls.port,
+      endpoints.tls.servername,
+    );
     checks.tls_cert_fetched = true;
-    report.tls_fingerprint = tlsFingerprint.toString("hex");
+    report.tls_spki_fingerprint = tlsBinding.spki.toString("hex");
+    report.tls_certificate_fingerprint = tlsBinding.certificate.toString("hex");
   } catch (e: any) {
     errors.push(`Failed to get TLS certificate: ${e.message}`);
     checks.tls_cert_fetched = false;
@@ -234,15 +299,19 @@ export async function verifyAgent(
   report.cpu_type = cpuResult.attestationType;
   if (!cpuResult.valid) errors.push(...cpuResult.errors);
 
-  // 5. TLS binding
+  // 5. TLS binding: SPKI [current] or full certificate [legacy]; accept either.
   const reportDataHex: string = cpuResult.report.report_data ?? "";
   if (reportDataHex.length >= 64) {
     const firstHalf = reportDataHex.slice(0, 64);
-    checks.tls_binding_verified = firstHalf === tlsFingerprint.toString("hex");
-    if (!checks.tls_binding_verified) {
+    const binding = classifyTlsBinding(firstHalf, tlsBinding);
+    checks.tls_binding_verified = binding.verified;
+    if (binding.verified) {
+      report.tls_binding_kind = binding.kind;
+    } else {
       errors.push(
         `TLS binding failed: report_data first half (${firstHalf.slice(0, 16)}...) ` +
-          `!= TLS fingerprint (${tlsFingerprint.toString("hex").slice(0, 16)}...)`,
+          `!= TLS SPKI (${tlsBinding.spki.toString("hex").slice(0, 16)}...) ` +
+          `or certificate (${tlsBinding.certificate.toString("hex").slice(0, 16)}...) digest`,
       );
     }
   } else {
@@ -250,7 +319,7 @@ export async function verifyAgent(
     errors.push("report_data too short for TLS binding check");
   }
 
-  // 6. GPU quote (optional)
+  // 6. GPU quote (optional — verifyAgent tolerates non-GPU VMs)
   let gpuPresent = false;
   let gpuData = "";
   try {
@@ -298,7 +367,7 @@ export async function verifyAgent(
   try {
     const resp = await fetch(workloadUrl);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const dockerCompose = extractDockerCompose(await resp.text());
+    const dockerCompose = await resp.text();
     checks.workload_fetched = true;
 
     const workloadResult = await verifyWorkload(cpuData, dockerCompose);

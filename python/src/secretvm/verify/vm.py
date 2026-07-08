@@ -3,43 +3,148 @@
 import asyncio
 import hashlib
 import json
+import re
+import socket
 import ssl
 import sys
+from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import requests
-from cryptography.hazmat.primitives.serialization import Encoding
-from cryptography.x509 import load_pem_x509_certificate
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+from cryptography.x509 import load_der_x509_certificate
 
 from .types import AttestationResult, order_checks
 
 _SECRET_VM_PORT = 29343
+_SECRET_VM_RESOURCE_PATHS = {"cpu", "gpu", "docker-compose"}
+
+
+@dataclass(frozen=True)
+class _Endpoint:
+    host: str
+    port: int
+    path_prefix: str
+    base_url: str
+
+
+def _get_tls_cert_digests(host: str, port: int) -> tuple[bytes, bytes]:
+    """Connect to host:port and return (SHA-256 of SPKI DER, SHA-256 of full cert DER).
+
+    The SPKI digest is the current binding (stable across cert renewals); the full
+    certificate digest is the legacy binding. Accepting either keeps a mixed fleet
+    verifiable. The platform trust store is enforced (create_default_context) before
+    hashing anything.
+    """
+    context = ssl.create_default_context()
+    with socket.create_connection((host, port), timeout=10) as sock:
+        with context.wrap_socket(sock, server_hostname=host) as tls_sock:
+            der = tls_sock.getpeercert(binary_form=True)
+    if not der:
+        raise ssl.SSLError("No certificate received")
+    cert = load_der_x509_certificate(der)
+    spki = cert.public_key().public_bytes(Encoding.DER, PublicFormat.SubjectPublicKeyInfo)
+    return hashlib.sha256(spki).digest(), hashlib.sha256(der).digest()
 
 
 def _get_tls_cert_fingerprint(host: str, port: int) -> bytes:
-    """Connect to host:port and return SHA-256 of the server's DER certificate."""
-    pem = ssl.get_server_certificate((host, port))
-    cert = load_pem_x509_certificate(pem.encode("ascii"))
-    der = cert.public_bytes(Encoding.DER)
-    return hashlib.sha256(der).digest()
+    """Return SHA-256 of the certificate SPKI DER (kept for backward compatibility)."""
+    return _get_tls_cert_digests(host, port)[0]
+
+
+def _classify_tls_binding(first_half_hex: str, spki: bytes, cert: bytes):
+    """Return (verified, kind) for report_data's first 32 bytes against either digest.
+
+    kind is "spki" (current) or "certificate" (legacy); None when unverified.
+    """
+    if first_half_hex == spki.hex():
+        return True, "spki"
+    if first_half_hex == cert.hex():
+        return True, "certificate"
+    return False, None
+
+
+def _format_url_host(host: str) -> str:
+    return f"[{host}]" if ":" in host and not host.startswith("[") else host
+
+
+def _normalize_endpoint(endpoint: str) -> str:
+    endpoint = endpoint.strip()
+    if "://" not in endpoint:
+        endpoint = f"https://{endpoint}"
+    return endpoint
+
+
+def _path_prefix(path: str) -> str:
+    trimmed = path.rstrip("/")
+    return "" if trimmed in ("", "/") else trimmed
+
+
+def _decode_path_segments(path_prefix: str, label: str) -> list[str]:
+    segments = [segment for segment in path_prefix.split("/") if segment]
+    decoded = []
+    for segment in segments:
+        if re.search(r"%(?![0-9A-Fa-f]{2})", segment):
+            raise ValueError(f"{label} contains invalid percent-encoding")
+        item = unquote(segment, errors="strict")
+        if "/" in item or "\\" in item:
+            raise ValueError(f"{label} must not contain encoded path separators")
+        decoded.append(item)
+    return decoded
+
+
+def _parse_service_base_url(
+    endpoint: str,
+    default_port: int = _SECRET_VM_PORT,
+    label: str = "SecretVM endpoint URL",
+) -> _Endpoint:
+    normalized = _normalize_endpoint(endpoint)
+    parsed = urlparse(normalized)
+    if parsed.scheme != "https":
+        raise ValueError(f"{label} must use https://")
+    if parsed.username or parsed.password:
+        raise ValueError(f"{label} must not include userinfo")
+    if parsed.query:
+        raise ValueError(f"{label} must not include a query string")
+    if parsed.fragment:
+        raise ValueError(f"{label} must not include a fragment")
+    if not parsed.hostname:
+        raise ValueError(f"{label} must include a host")
+
+    path_prefix = _path_prefix(parsed.path)
+    decoded_segments = _decode_path_segments(path_prefix, label)
+    if decoded_segments and decoded_segments[-1] in _SECRET_VM_RESOURCE_PATHS:
+        raise ValueError(
+            f"{label} must be a service base URL, not a concrete /{decoded_segments[-1]} resource path"
+        )
+
+    try:
+        parsed_port = parsed.port
+    except ValueError as e:
+        raise ValueError(f"{label} has an invalid port") from e
+    port = parsed_port if parsed_port is not None else default_port
+    if port < 1 or port > 65535:
+        raise ValueError(f"{label} has an invalid port")
+    base_url = f"https://{_format_url_host(parsed.hostname)}:{port}{path_prefix}"
+    return _Endpoint(host=parsed.hostname, port=port, path_prefix=path_prefix, base_url=base_url)
+
+
+def _parse_tls_endpoint(endpoint: str, label: str = "TLS endpoint URL") -> _Endpoint:
+    parsed = _parse_service_base_url(endpoint, default_port=443, label=label)
+    if parsed.path_prefix:
+        raise ValueError(f"{label} must not include a path")
+    return parsed
 
 
 def _parse_vm_url(url: str) -> tuple[str, int]:
     """Extract host and port from a URL, defaulting to port 29343."""
-    if "://" not in url:
-        url = f"https://{url}"
-    parsed = urlparse(url)
-    host = parsed.hostname or parsed.path
-    port = parsed.port or _SECRET_VM_PORT
-    return host, port
+    parsed = _parse_service_base_url(url)
+    return parsed.host, parsed.port
 
 
 def _extract_docker_compose(raw: str) -> str:
-    """Extract YAML from an HTML-wrapped response.
-
-    The VM serves docker-compose inside a <pre> tag with HTML-encoded entities.
-    """
+    """Legacy helper for old HTML-wrapped compose endpoints."""
     import html
     import re
 
@@ -74,20 +179,18 @@ def check_secret_vm(
 ) -> AttestationResult:
     """Verify a Secret VM by fetching CPU and GPU attestation from its endpoints.
 
-    Connects to the VM's attestation service at <url>:29343, fetches the CPU
-    quote from /cpu and (optionally) the GPU quote from /gpu, verifies both,
+    Connects to the VM's attestation service base URL, fetches the CPU
+    quote from /cpu and the GPU quote from /gpu, verifies both,
     and checks the binding between:
-      - The TLS certificate fingerprint and the first half of report_data
-      - The GPU nonce and the second half of report_data (if GPU is present)
+      - The TLS certificate SPKI digest and the first half of report_data
+      - The GPU nonce and the second half of report_data
 
     Args:
-        url: VM address (e.g. "https://host:29343", "host:29343", or just "host").
+        url: VM attestation service base URL (e.g. "https://host:21434",
+            "https://host:29343", or just "host").
         product: AMD product name (only used for SEV-SNP). Auto-detected if empty.
         reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
             VCEK / cert chain / CRL. No effect on TDX VMs (TDX doesn't cache).
-        enforce_gpu: If True, require the VM to expose a verifiable GPU
-            attestation. A VM with no GPU (the /gpu endpoint returns an error)
-            then fails verification instead of passing as a CPU-only VM.
 
     Returns:
         AttestationResult with attestation_type="SECRET-VM".
@@ -99,14 +202,24 @@ def check_secret_vm(
     checks = {}
     report = {}
 
-    host, port = _parse_vm_url(url)
-    base_url = f"https://{host}:{port}"
-
-    # 1. Get TLS certificate fingerprint
     try:
-        tls_fingerprint = pkg._get_tls_cert_fingerprint(host, port)
+        endpoint = _parse_service_base_url(url)
+    except Exception as e:
+        errors.append(f"Invalid SecretVM endpoint URL: {e}")
+        return AttestationResult(
+            valid=False, attestation_type="SECRET-VM",
+            checks=order_checks(checks), report=report, errors=errors,
+        )
+
+    host, port = endpoint.host, endpoint.port
+    base_url = endpoint.base_url
+
+    # 1. Get TLS certificate digests (SPKI + full certificate, for backward compat)
+    try:
+        tls_spki_fingerprint, tls_cert_fingerprint = pkg._get_tls_cert_digests(host, port)
         checks["tls_cert_fetched"] = True
-        report["tls_fingerprint"] = tls_fingerprint.hex()
+        report["tls_spki_fingerprint"] = tls_spki_fingerprint.hex()
+        report["tls_certificate_fingerprint"] = tls_cert_fingerprint.hex()
     except Exception as e:
         errors.append(f"Failed to get TLS certificate: {e}")
         checks["tls_cert_fetched"] = False
@@ -138,22 +251,28 @@ def check_secret_vm(
     if not cpu_result.valid:
         errors.extend(cpu_result.errors)
 
-    # 3. Check TLS binding: first 32 bytes of report_data == SHA-256(TLS cert)
+    # 3. Check TLS binding: first 32 bytes of report_data == SHA-256(SPKI DER)
+    #    [current] or SHA-256(full certificate DER) [legacy]. Accept either.
     report_data_hex = cpu_result.report.get("report_data", "")
     if len(report_data_hex) >= 64:
         first_half = report_data_hex[:64]  # first 32 bytes as hex
-        checks["tls_binding_verified"] = first_half == tls_fingerprint.hex()
-        if not checks["tls_binding_verified"]:
+        verified, kind = _classify_tls_binding(first_half, tls_spki_fingerprint, tls_cert_fingerprint)
+        checks["tls_binding_verified"] = verified
+        if verified:
+            report["tls_binding_kind"] = kind
+        else:
             errors.append(
                 f"TLS binding failed: report_data first half ({first_half[:16]}...) "
-                f"!= TLS fingerprint ({tls_fingerprint.hex()[:16]}...)"
+                f"!= TLS SPKI ({tls_spki_fingerprint.hex()[:16]}...) "
+                f"or certificate ({tls_cert_fingerprint.hex()[:16]}...) digest"
             )
     else:
         checks["tls_binding_verified"] = False
         errors.append("report_data too short for TLS binding check")
 
-    # 4. Fetch and verify GPU quote (optional)
+    # 4. Fetch and verify GPU quote (optional). GPU is only required when enforce_gpu is set.
     gpu_present = False
+    gpu_data = ""
     try:
         resp = pkg.requests.get(f"{base_url}/gpu", timeout=15, verify=True)
         resp.raise_for_status()
@@ -190,10 +309,8 @@ def check_secret_vm(
             checks["gpu_binding_verified"] = False
             errors.append("report_data too short for GPU binding check")
 
-    # 5b. GPU enforcement (opt-in): when enforce_gpu is set, a GPU must be
-    # present. Record it as its own check so a CPU-only VM fails closed instead
-    # of silently passing. (When enforce_gpu is off the check is omitted, so
-    # default behavior is unchanged.)
+    # 5b. GPU enforcement (opt-in): when enforce_gpu is set, a GPU must be present,
+    # so a CPU-only VM fails closed instead of silently passing.
     if enforce_gpu:
         checks["gpu_present"] = gpu_present
         if not gpu_present:
@@ -205,7 +322,7 @@ def check_secret_vm(
     try:
         resp = pkg.requests.get(f"{base_url}/docker-compose", timeout=15, verify=True)
         resp.raise_for_status()
-        docker_compose = _extract_docker_compose(resp.text)
+        docker_compose = resp.text
         checks["workload_fetched"] = True
 
         workload_result = pkg.verify_workload(

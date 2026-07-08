@@ -5,7 +5,7 @@ import re
 
 import requests
 
-SECRET_VM_PORT = 29343
+from .vm import _parse_service_base_url
 
 
 def is_vm_url(data: str) -> bool:
@@ -17,15 +17,8 @@ def is_vm_url(data: str) -> bool:
 
 
 def _vm_base_url(url: str) -> str:
-    """Normalize a VM URL to https://host:port."""
-    from urllib.parse import urlparse
-
-    u = url.strip()
-    if "://" not in u:
-        u = f"https://{u}"
-    parsed = urlparse(u)
-    port = parsed.port or SECRET_VM_PORT
-    return f"https://{parsed.hostname}:{port}"
+    """Normalize a VM service-base URL to https://host:port[/path-prefix]."""
+    return _parse_service_base_url(url).base_url
 
 
 def fetch_vm_endpoint(url: str, endpoint: str) -> str:
@@ -47,13 +40,12 @@ def fetch_gpu_quote(url: str) -> str:
 
 
 def fetch_docker_compose(url: str) -> str:
-    """Fetch and clean docker-compose from a VM."""
-    raw = fetch_vm_endpoint(url, "docker-compose")
-    return _extract_docker_compose(raw)
+    """Fetch the exact docker-compose response from a VM."""
+    return fetch_vm_endpoint(url, "docker-compose")
 
 
 def _extract_docker_compose(raw: str) -> str:
-    """Extract YAML from an HTML-wrapped response."""
+    """Legacy helper for old HTML-wrapped compose endpoints."""
     text = raw.strip()
     m = re.search(r"<pre>(.*?)</pre>", text, re.DOTALL | re.IGNORECASE)
     if m:
