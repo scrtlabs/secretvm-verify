@@ -4,7 +4,8 @@ export type { TdxQuoteFields } from "./tdx.js";
 export { checkSevCpuAttestation } from "./amd.js";
 export { checkNvidiaGpuAttestation } from "./nvidia.js";
 export { checkCpuAttestation, detectCpuQuoteType } from "./cpu.js";
-export { checkSecretVm } from "./vm.js";
+export { checkSecretVm, parseVmUrl, resolveSecretVmEndpoints } from "./vm.js";
+export type { CheckSecretVmOptions, SecretVmEndpoint } from "./vm.js";
 export { checkProofOfCloud } from "./proofOfCloud.js";
 export {
     resolveSecretVmVersion,

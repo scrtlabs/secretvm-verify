@@ -367,7 +367,7 @@ class TestSecretVm:
     def test_vm_with_gpu_all_pass(self):
         tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass, poc_pass = _make_test_data()
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
@@ -396,7 +396,7 @@ class TestSecretVm:
     def test_vm_without_gpu(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
@@ -421,7 +421,7 @@ class TestSecretVm:
     def test_enforce_gpu_without_gpu_fails(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, _ = _make_test_data()
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.requests") as mock_req:
@@ -442,7 +442,7 @@ class TestSecretVm:
     def test_enforce_gpu_with_gpu_passes(self):
         tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass, _ = _make_test_data()
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
@@ -472,7 +472,7 @@ class TestSecretVm:
             errors=["Machine abc123 is not whitelisted by trust-server peer "
                     "https://trust-server.scrtlabs.com"],
         )
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.check_proof_of_cloud", return_value=poc_fail), \
@@ -488,12 +488,36 @@ class TestSecretVm:
         assert result.checks["proof_of_cloud_verified"] is False
         assert any("not whitelisted" in e for e in result.errors)
 
+    def test_tls_binding_accepts_spki_and_certificate(self):
+        # report_data first half == tls_fp. Verify it passes both when tls_fp is the
+        # SPKI digest (current VMs) and when it is the full-certificate digest (legacy),
+        # recording which kind matched.
+        tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass, poc_pass = _make_test_data()
+        other = bytes.fromhex("11" * 32)
+
+        for digests, expected_kind in [((tls_fp, other), "spki"), ((other, tls_fp), "certificate")]:
+            with patch(f"{_M}._get_tls_cert_digests", return_value=digests), \
+                 patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+                 patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
+                 patch(f"{_M}.verify_workload", return_value=workload_pass), \
+                 patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
+                 patch(f"{_M}.requests") as mock_req:
+                mock_req.get.side_effect = [
+                    _mock_response("fake_cpu_quote"),
+                    _mock_response(gpu_json, content_type="application/json"),
+                    _mock_response("version: '3'\nservices: {}"),
+                ]
+                result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
+
+            assert result.checks["tls_binding_verified"] is True
+            assert result.report["tls_binding_kind"] == expected_kind
+
     def test_tls_binding_failure(self):
         tls_fp, cpu_result, _, _, no_gpu_json, workload_pass, poc_pass = _make_test_data()
         # Use wrong TLS fingerprint
         wrong_tls = bytes.fromhex("ff" * 32)
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=wrong_tls), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(wrong_tls, wrong_tls)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
@@ -514,7 +538,7 @@ class TestSecretVm:
         # GPU JSON with wrong nonce
         wrong_gpu_json = json.dumps({"nonce": "dd" * 32, "arch": "HOPPER", "evidence_list": []})
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
@@ -540,7 +564,7 @@ class TestSecretVm:
             errors=["Quote verification failed"],
         )
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=bad_cpu), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
@@ -564,7 +588,7 @@ class TestSecretVm:
             errors=["JWT signature verification failed"],
         )
 
-        with patch(f"{_M}._get_tls_cert_fingerprint", return_value=tls_fp), \
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
              patch(f"{_M}.check_nvidia_gpu_attestation", return_value=bad_gpu), \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
@@ -1182,3 +1206,32 @@ class TestProofOfCloud:
 
         # Refresh attempted only once for the whole process.
         assert mock_urlopen.call_count == 1
+
+
+class TestStrictEndpointParsing:
+    """Ported from #3: strict service-base URL parsing."""
+
+    def test_rejects_concrete_resource_paths(self):
+        from secretvm.verify.vm import _parse_service_base_url
+        for url in ["https://host:29343/cpu", "https://host:29343/gpu",
+                    "https://host:29343/docker-compose", "https://host:29343/teequote%2Fcpu"]:
+            with pytest.raises(ValueError):
+                _parse_service_base_url(url)
+
+    def test_rejects_non_https_and_userinfo(self):
+        from secretvm.verify.vm import _parse_service_base_url
+        with pytest.raises(ValueError):
+            _parse_service_base_url("http://host")
+        with pytest.raises(ValueError):
+            _parse_service_base_url("https://u:p@host")
+
+    def test_accepts_service_base_and_preserves_path_prefix(self):
+        from secretvm.verify.vm import _parse_service_base_url
+        ep = _parse_service_base_url("https://host/teequote")
+        assert ep.base_url == "https://host:29343/teequote"
+
+    def test_tls_endpoint_defaults_443_and_forbids_path(self):
+        from secretvm.verify.vm import _parse_tls_endpoint
+        assert _parse_tls_endpoint("https://api.example").base_url == "https://api.example:443"
+        with pytest.raises(ValueError):
+            _parse_tls_endpoint("https://api.example/foo")

@@ -785,3 +785,100 @@ describe("calculateRtmr3", () => {
     assert.equal(fromBytes, fromHex);
   });
 });
+
+describe("classifyTlsBinding", () => {
+  it("accepts either SPKI or full-certificate digest and reports which", async () => {
+    const { classifyTlsBinding } = await import("./url.js");
+    const spki = Buffer.from("11".repeat(32), "hex");
+    const certificate = Buffer.from("22".repeat(32), "hex");
+    const binding = { spki, certificate };
+
+    assert.deepEqual(classifyTlsBinding(spki.toString("hex"), binding), {
+      verified: true,
+      kind: "spki",
+    });
+    assert.deepEqual(classifyTlsBinding(certificate.toString("hex"), binding), {
+      verified: true,
+      kind: "certificate",
+    });
+    assert.deepEqual(classifyTlsBinding("33".repeat(32), binding), {
+      verified: false,
+    });
+  });
+
+  it("binds to the SPKI, which survives certificate reissuance with the same key", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { X509Certificate, createHash } = await import("node:crypto");
+    const { tlsCertSpkiSha256, tlsCertSha256 } = await import("./url.js");
+
+    const dir = mkdtempSync(join(tmpdir(), "spki-"));
+    try {
+      const key = join(dir, "k.pem");
+      const c1 = join(dir, "c1.pem");
+      const c2 = join(dir, "c2.pem");
+      execFileSync("openssl", ["genrsa", "-out", key, "2048"]);
+      for (const [out, serial] of [[c1, "1"], [c2, "2"]] as const) {
+        execFileSync("openssl", [
+          "req", "-new", "-x509", "-key", key, "-out", out,
+          "-days", "1", "-subj", "/CN=secretvm.test", "-set_serial", serial,
+        ]);
+      }
+      const cert1 = new X509Certificate(readFileSync(c1));
+      const cert2 = new X509Certificate(readFileSync(c2));
+      // Different certificates (full-cert hash differs) ...
+      assert.notEqual(tlsCertSha256(cert1).toString("hex"), tlsCertSha256(cert2).toString("hex"));
+      // ... but the same key => identical SPKI hash.
+      assert.equal(tlsCertSpkiSha256(cert1).toString("hex"), tlsCertSpkiSha256(cert2).toString("hex"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("strict endpoint parsing + split endpoints (ported from #3)", () => {
+  it("rejects a concrete /cpu resource path as a service base URL", async () => {
+    const { parseServiceBaseUrl } = await import("./url.js");
+    assert.throws(
+      () => parseServiceBaseUrl("https://host:29343/cpu", 29343),
+      /service base URL/,
+    );
+  });
+
+  it("rejects non-https and userinfo/query/fragment", async () => {
+    const { parseServiceBaseUrl } = await import("./url.js");
+    assert.throws(() => parseServiceBaseUrl("http://host", 29343), /https/);
+    assert.throws(() => parseServiceBaseUrl("https://u:p@host", 29343), /userinfo/);
+    assert.throws(() => parseServiceBaseUrl("https://host?x=1", 29343), /query/);
+  });
+
+  it("resolves separate attestation and TLS binding endpoints", async () => {
+    const { resolveSecretVmEndpoints } = await import("./vm.js");
+    const e = resolveSecretVmEndpoints("https://host:29343", "https://host:21434");
+    assert.equal(e.attestation.baseUrl, "https://host:29343");
+    assert.equal(e.tls.baseUrl, "https://host:21434");
+  });
+
+  it("preserves an attestation path prefix and defaults the TLS port to 443", async () => {
+    const { resolveSecretVmEndpoints } = await import("./vm.js");
+    const e = resolveSecretVmEndpoints("https://attest.example/teequote", "https://api.example");
+    assert.equal(e.attestation.baseUrl, "https://attest.example:29343/teequote");
+    assert.equal(e.tls.baseUrl, "https://api.example:443");
+  });
+
+  it("agent metadata requires a unique inference service for TLS binding", async () => {
+    const { resolveAgentSecretVmEndpoints } = await import("./agent.js");
+    const ok = resolveAgentSecretVmEndpoints([
+      { name: "teequote", endpoint: "agent.example.com" },
+      { name: "inference", endpoint: "agent.example.com" },
+    ]);
+    assert.equal(ok.error, undefined);
+    assert.equal(ok.tlsBindingServiceName, "inference");
+
+    const missing = resolveAgentSecretVmEndpoints([
+      { name: "teequote", endpoint: "agent.example.com" },
+    ]);
+    assert.match(missing.error ?? "", /No inference service endpoint/);
+  });
+});
