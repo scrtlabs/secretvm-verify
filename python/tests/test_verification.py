@@ -1235,3 +1235,41 @@ class TestStrictEndpointParsing:
         assert _parse_tls_endpoint("https://api.example").base_url == "https://api.example:443"
         with pytest.raises(ValueError):
             _parse_tls_endpoint("https://api.example/foo")
+
+
+class TestPortFallback:
+    """Bare host (no explicit port) probes 29343 then falls back to 21434."""
+
+    def test_bare_host_prefers_29343(self):
+        from secretvm.verify.vm import _resolve_endpoint_with_fallback
+        pkg = MagicMock()
+        pkg.requests.get.return_value = _mock_response("00")  # 29343 answers
+        ep = _resolve_endpoint_with_fallback("host.example", pkg)
+        assert ep.base_url == "https://host.example:29343"
+
+    def test_bare_host_falls_back_to_21434(self):
+        from secretvm.verify.vm import _resolve_endpoint_with_fallback
+        pkg = MagicMock()
+
+        def _get(url, **kw):
+            if ":29343/" in url:
+                raise Exception("ECONNREFUSED")
+            return _mock_response("00")
+
+        pkg.requests.get.side_effect = _get
+        ep = _resolve_endpoint_with_fallback("host.example", pkg)
+        assert ep.base_url == "https://host.example:21434"
+
+    def test_explicit_port_is_not_probed(self):
+        from secretvm.verify.vm import _resolve_endpoint_with_fallback
+        pkg = MagicMock()
+        ep = _resolve_endpoint_with_fallback("https://host.example:29343", pkg)
+        assert ep.base_url == "https://host.example:29343"
+        pkg.requests.get.assert_not_called()
+
+    def test_none_reachable_defaults_to_29343(self):
+        from secretvm.verify.vm import _resolve_endpoint_with_fallback
+        pkg = MagicMock()
+        pkg.requests.get.side_effect = Exception("down")
+        ep = _resolve_endpoint_with_fallback("host.example", pkg)
+        assert ep.base_url == "https://host.example:29343"

@@ -8,12 +8,19 @@ import {
   endpointBaseUrl,
   extractDockerCompose,
   getTlsCertBinding as getTlsCertBindingDefault,
+  hasExplicitPort,
   normalizeEndpointUrl,
   parseEndpointUrl,
   parseServiceBaseUrl,
 } from "./url.js";
 
 const SECRET_VM_PORT = 29343;
+// When a bare host (no explicit port) is given, we probe SECRET_VM_PORT first
+// (attest-rest bound directly, standard VMs) and fall back to this port, where
+// a host-net Caddy fronts the app-cert TLS and proxies the evidence endpoints
+// (jedi/rytn topology; attest-rest is loopback-only and unreachable on 29343).
+const SECRET_VM_TLS_FALLBACK_PORT = 21434;
+const PROBE_TIMEOUT_MS = 5000;
 const HTTPS_PORT = 443;
 
 // ---------------------------------------------------------------------------
@@ -84,8 +91,11 @@ export function parseVmUrl(url: string): { host: string; port: number } {
   };
 }
 
-function makeAttestationEndpoint(url: string): SecretVmEndpoint {
-  const parsed = parseServiceBaseUrl(url, SECRET_VM_PORT, "Attestation URL");
+function makeAttestationEndpoint(
+  url: string,
+  defaultPort: number = SECRET_VM_PORT,
+): SecretVmEndpoint {
+  const parsed = parseServiceBaseUrl(url, defaultPort, "Attestation URL");
   return {
     host: parsed.host,
     port: parsed.port,
@@ -145,6 +155,52 @@ export function resolveSecretVmEndpoints(
     attestation,
     tls: tlsUrl === undefined ? attestation : makeTlsEndpoint(tlsUrl),
   };
+}
+
+// probeCpu returns true if the endpoint answers GET /cpu within the timeout.
+// A reachable /cpu marks the origin that serves both the quote and the
+// app-cert TLS, so attestation and tls endpoints share that port.
+async function probeCpu(
+  endpoint: SecretVmEndpoint,
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const resp = await fetchImpl(`${endpoint.baseUrl}/cpu`, { signal: controller.signal });
+    return resp.ok;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// resolveSecretVmEndpointsWithFallback mirrors resolveSecretVmEndpoints but,
+// when the URL carries no explicit port and no separate tls URL was given,
+// probes SECRET_VM_PORT (29343) then SECRET_VM_TLS_FALLBACK_PORT (21434) and
+// binds both endpoints to whichever answers /cpu. An explicit port or an
+// explicit tls URL disables probing and preserves the exact prior behavior.
+async function resolveSecretVmEndpointsWithFallback(
+  attestationUrl: string,
+  tlsUrl: string | undefined,
+  fetchImpl: typeof fetch,
+): Promise<{ attestation: SecretVmEndpoint; tls: SecretVmEndpoint }> {
+  if (tlsUrl !== undefined || hasExplicitPort(attestationUrl)) {
+    return resolveSecretVmEndpoints(attestationUrl, tlsUrl);
+  }
+  const candidatePorts = [SECRET_VM_PORT, SECRET_VM_TLS_FALLBACK_PORT];
+  let first: SecretVmEndpoint | undefined;
+  for (const port of candidatePorts) {
+    const endpoint = makeAttestationEndpoint(attestationUrl, port);
+    if (first === undefined) first = endpoint;
+    if (await probeCpu(endpoint, fetchImpl)) {
+      return { attestation: endpoint, tls: endpoint };
+    }
+  }
+  // None reachable: fall back to the primary port so downstream fetch surfaces
+  // a clear error against 29343.
+  return { attestation: first!, tls: first! };
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +275,7 @@ export async function checkSecretVmWithRuntime(
 
   let endpoints: ReturnType<typeof resolveSecretVmEndpoints>;
   try {
-    endpoints = resolveSecretVmEndpoints(url, options.tlsUrl);
+    endpoints = await resolveSecretVmEndpointsWithFallback(url, options.tlsUrl, runtime.fetch);
   } catch (e: any) {
     return makeResult("SECRET-VM", { errors: [e.message] });
   }

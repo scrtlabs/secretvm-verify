@@ -882,3 +882,58 @@ describe("strict endpoint parsing + split endpoints (ported from #3)", () => {
     assert.match(missing.error ?? "", /No inference service endpoint/);
   });
 });
+
+describe("bare-host default-port fallback (29343 → 21434)", () => {
+  // Runtime whose /cpu answers only on the given port; every other fetch throws.
+  // getTlsCertBinding returns dummy digests; downstream verification is allowed
+  // to fail — we only assert which port the endpoints resolved to.
+  function runtimeAnsweringOn(port: number) {
+    return {
+      fetch: async (input: any) => {
+        const u = String(input);
+        if (u.includes(`:${port}/`)) {
+          return { ok: true, status: 200, text: async () => "00" } as any;
+        }
+        throw new Error("ECONNREFUSED");
+      },
+      getTlsCertBinding: async () => ({
+        spki: Buffer.alloc(32),
+        certificate: Buffer.alloc(32),
+      }),
+      checkCpuAttestation: async () => ({
+        valid: false,
+        report: {},
+        attestationType: "tdx",
+        errors: [],
+      }),
+      checkNvidiaGpuAttestation: async () => ({ valid: false }),
+      verifyWorkload: async () => ({}),
+    } as any;
+  }
+
+  it("binds to 29343 when the standard attestation port answers", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const result = await checkSecretVmWithRuntime("host.example", {}, runtimeAnsweringOn(29343));
+    assert.match(result.report.attestation_url, /:29343$/);
+    assert.match(result.report.tls_binding_url, /:29343$/);
+  });
+
+  it("falls back to 21434 when 29343 is unreachable", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const result = await checkSecretVmWithRuntime("host.example", {}, runtimeAnsweringOn(21434));
+    assert.match(result.report.attestation_url, /:21434$/);
+    assert.match(result.report.tls_binding_url, /:21434$/);
+  });
+
+  it("honors an explicit port without probing the fallback", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    // 29343 is unreachable, but the explicit port must be kept as-is (no 21434).
+    const result = await checkSecretVmWithRuntime(
+      "https://host.example:29343",
+      {},
+      runtimeAnsweringOn(21434),
+    );
+    assert.match(result.report.attestation_url, /:29343$/);
+    assert.match(result.report.tls_binding_url, /:29343$/);
+  });
+});

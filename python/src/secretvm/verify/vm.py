@@ -18,6 +18,12 @@ from cryptography.x509 import load_der_x509_certificate
 from .types import AttestationResult, order_checks
 
 _SECRET_VM_PORT = 29343
+# When a bare host (no explicit port) is given, probe _SECRET_VM_PORT first
+# (attest-rest bound directly, standard VMs) and fall back to this port, where
+# a host-net Caddy fronts the app-cert TLS and proxies the evidence endpoints
+# (jedi/rytn topology; attest-rest is loopback-only and unreachable on 29343).
+_SECRET_VM_TLS_FALLBACK_PORT = 21434
+_PROBE_TIMEOUT_SECONDS = 5
 _SECRET_VM_RESOURCE_PATHS = {"cpu", "gpu", "docker-compose"}
 
 
@@ -143,6 +149,45 @@ def _parse_vm_url(url: str) -> tuple[str, int]:
     return parsed.host, parsed.port
 
 
+def _has_explicit_port(url: str) -> bool:
+    """Report whether the URL's authority carries an explicit ":port"."""
+    try:
+        return urlparse(_normalize_endpoint(url)).port is not None
+    except ValueError:
+        return False
+
+
+def _probe_cpu(base_url: str, pkg) -> bool:
+    """Return True if the endpoint answers GET /cpu within the probe timeout."""
+    try:
+        resp = pkg.requests.get(f"{base_url}/cpu", timeout=_PROBE_TIMEOUT_SECONDS, verify=True)
+        return resp.ok
+    except Exception:
+        return False
+
+
+def _resolve_endpoint_with_fallback(url: str, pkg) -> _Endpoint:
+    """Resolve the VM endpoint, probing default ports when none is given.
+
+    A bare host (no explicit port) probes _SECRET_VM_PORT (29343) then
+    _SECRET_VM_TLS_FALLBACK_PORT (21434) and binds to whichever answers /cpu;
+    that origin serves both the quote and the app-cert TLS. An explicit port is
+    honored as-is (no probing).
+    """
+    if _has_explicit_port(url):
+        return _parse_service_base_url(url)
+    first: Optional[_Endpoint] = None
+    for port in (_SECRET_VM_PORT, _SECRET_VM_TLS_FALLBACK_PORT):
+        endpoint = _parse_service_base_url(url, default_port=port)
+        if first is None:
+            first = endpoint
+        if _probe_cpu(endpoint.base_url, pkg):
+            return endpoint
+    # None reachable: fall back to the primary port so the downstream fetch
+    # surfaces a clear error against 29343.
+    return first  # type: ignore[return-value]
+
+
 def _extract_docker_compose(raw: str) -> str:
     """Legacy helper for old HTML-wrapped compose endpoints."""
     import html
@@ -203,7 +248,7 @@ def check_secret_vm(
     report = {}
 
     try:
-        endpoint = _parse_service_base_url(url)
+        endpoint = _resolve_endpoint_with_fallback(url, pkg)
     except Exception as e:
         errors.append(f"Invalid SecretVM endpoint URL: {e}")
         return AttestationResult(

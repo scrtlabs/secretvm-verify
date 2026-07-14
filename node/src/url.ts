@@ -53,6 +53,13 @@ function explicitAuthorityPort(normalizedUrl: string): number | undefined {
   return undefined;
 }
 
+// hasExplicitPort reports whether the URL's authority carries an explicit
+// ":port". Used to decide whether default-port probing (29343 → 21434) applies:
+// an explicit port is always honored as-is.
+export function hasExplicitPort(url: string): boolean {
+  return explicitAuthorityPort(normalizeEndpointUrl(url)) !== undefined;
+}
+
 function endpointPathPrefix(parsed: URL): string {
   const trimmed = parsed.pathname.replace(/\/+$/, "");
   return trimmed === "/" ? "" : trimmed;
