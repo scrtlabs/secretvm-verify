@@ -2,6 +2,7 @@ import { parseTdxQuoteFields } from "./tdx.js";
 import { detectCpuQuoteType } from "./cpu.js";
 import {
     endpointBaseUrl,
+    extractDockerCompose,
     fetchCpuQuote,
     fetchDockerCompose,
     isVmUrl,
@@ -20,6 +21,17 @@ import { calcSevMeasurement, parseSevFamilyId, VCPU_MAP } from "./sevGctx.js";
 import { createHash } from "node:crypto";
 
 const SECRET_VM_PORT = 29343;
+
+// Old attest-rest wraps the /docker-compose response in an HTML page (a <pre>
+// block with a trailing zero-width space); newer attest-rest serves the raw
+// file bytes. The measurement (RTMR3 on TDX, docker_compose_hash on SEV) is
+// always over the original file, so we try both the raw response and the
+// HTML-extracted content and accept a match on either — this keeps verification
+// working across old (HTML-wrapped) and new (raw) VMs.
+function composeCandidates(compose: string): string[] {
+    const extracted = extractDockerCompose(compose);
+    return extracted !== compose ? [compose, extracted] : [compose];
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,17 +187,21 @@ export async function verifyTdxWorkload(
     const env = best.vm_type;
     const artifacts_ver = best.artifacts_ver;
 
-    // Check compose against every candidate entry (different rootfs_data or envs)
+    // Check compose against every candidate entry (different rootfs_data or envs),
+    // trying both the raw and HTML-extracted compose (old vs new attest-rest).
+    const composeVariants = composeCandidates(compose);
     for (const entry of candidates) {
-        const expected = calculateRtmr3(compose, entry.rootfs_data, dockerFilesSha256);
-        if (expected === quoteRtmr3) {
-            return {
-                status: "authentic_match",
-                template_name: entry.template_name,
-                vm_type: entry.vm_type,
-                artifacts_ver: entry.artifacts_ver,
-                env: entry.vm_type,
-            };
+        for (const variant of composeVariants) {
+            const expected = calculateRtmr3(variant, entry.rootfs_data, dockerFilesSha256);
+            if (expected === quoteRtmr3) {
+                return {
+                    status: "authentic_match",
+                    template_name: entry.template_name,
+                    vm_type: entry.vm_type,
+                    artifacts_ver: entry.artifacts_ver,
+                    env: entry.vm_type,
+                };
+            }
         }
     }
 
@@ -289,8 +305,11 @@ export async function verifySevWorkload(
         return { status: "not_authentic" };
     }
 
-    // raw SHA256 — matches jeeves compute_file_hash() (no YAML normalization)
-    const composeHash = createHash("sha256").update(compose, "utf8").digest("hex");
+    // raw SHA256 — matches jeeves compute_file_hash() (no YAML normalization).
+    // Try both the raw and HTML-extracted compose (old vs new attest-rest).
+    const composeHashes = composeCandidates(compose).map(
+        (c) => createHash("sha256").update(c, "utf8").digest("hex"),
+    );
 
     // Inner helper: try to match quote against a given registry snapshot.
     // Returns WorkloadResult on any definitive answer, null when no entry matched
@@ -303,19 +322,21 @@ export async function verifySevWorkload(
                     const prefix = entry.cmdline_extra
                         ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
                         : `console=ttyS0 loglevel=7`;
-                    let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
-                    if (dockerFilesSha256) cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
-                    try {
-                        if (calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement) {
-                            return {
-                                status: "authentic_match",
-                                template_name: templateName,
-                                vm_type: entry.vm_type,
-                                artifacts_ver: entry.artifacts_ver,
-                                env: entry.vm_type,
-                            };
-                        }
-                    } catch { /* skip */ }
+                    for (const composeHash of composeHashes) {
+                        let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+                        if (dockerFilesSha256) cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+                        try {
+                            if (calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement) {
+                                return {
+                                    status: "authentic_match",
+                                    template_name: templateName,
+                                    vm_type: entry.vm_type,
+                                    artifacts_ver: entry.artifacts_ver,
+                                    env: entry.vm_type,
+                                };
+                            }
+                        } catch { /* skip */ }
+                    }
                 }
             }
             return null;
@@ -329,15 +350,18 @@ export async function verifySevWorkload(
             const prefix = entry.cmdline_extra
                 ? `console=ttyS0 loglevel=7 ${entry.cmdline_extra}`
                 : `console=ttyS0 loglevel=7`;
-            let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
-            if (dockerFilesSha256) {
-                cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+            for (const composeHash of composeHashes) {
+                let cmdline = `${prefix} docker_compose_hash=${composeHash} rootfs_hash=${entry.rootfs_hash}`;
+                if (dockerFilesSha256) {
+                    cmdline += ` docker_additional_files_hash=${dockerFilesSha256}`;
+                }
+                try {
+                    if (calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement) return true;
+                } catch {
+                    /* skip */
+                }
             }
-            try {
-                return calcSevMeasurement(entry, vcpus, cmdline) === quoteMeasurement;
-            } catch {
-                return false;
-            }
+            return false;
         }
 
         // Try version-specific entries first

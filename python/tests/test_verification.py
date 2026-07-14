@@ -650,6 +650,16 @@ def docker_compose():
     return DOCKER_COMPOSE_FILE.read_text()
 
 
+def _html_wrap_compose(compose: str) -> str:
+    """Reproduce the old attest-rest /docker-compose HTML wrapper: the file
+    content HTML-escaped inside a <pre> block with a trailing zero-width space."""
+    escaped = compose.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        '<!DOCTYPE html><html><head><meta charset="utf-8"></head>'
+        f"<body><pre>{escaped}&#8203;</pre></body></html>"
+    )
+
+
 class TestResolveSecretvmVersion:
     def test_resolves_known_quote(self, docker_quote):
         v = resolve_secretvm_version(docker_quote)
@@ -683,6 +693,13 @@ class TestVerifyTdxWorkload:
         out = format_workload_result(r)
         assert "Confirmed" in out
         assert "docker-compose" in out
+
+    def test_authentic_match_for_html_wrapped_compose(self, docker_quote, docker_compose):
+        # Old attest-rest wraps /docker-compose in HTML; the verifier must extract
+        # the original bytes to reproduce the RTMR3 measurement.
+        r = verify_tdx_workload(docker_quote, _html_wrap_compose(docker_compose))
+        assert r.status == "authentic_match"
+        assert r.template_name == "small"
 
     def test_authentic_mismatch_when_compose_tampered(self, docker_quote, docker_compose):
         tampered = docker_compose + "\n# tampered"
@@ -806,6 +823,12 @@ class TestVerifySevWorkload:
         assert r.template_name == "small"
         assert r.artifacts_ver == "v0.0.25"
         assert r.env == "prod"
+
+    def test_authentic_match_for_html_wrapped_compose(self):
+        r = verify_sev_workload(AMD_DOCKER_QUOTE, _html_wrap_compose(AMD_DOCKER_COMPOSE))
+        assert r.status == "authentic_match"
+        assert r.template_name == "small"
+        assert r.artifacts_ver == "v0.0.25"
 
     def test_authentic_mismatch_for_wrong_compose(self):
         r = verify_sev_workload(AMD_DOCKER_QUOTE, AMD_DOCKER_COMPOSE + "\n# tampered")

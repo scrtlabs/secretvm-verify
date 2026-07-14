@@ -14,6 +14,24 @@ import yaml as _yaml
 from .types import WorkloadResult
 from .tdx import _tdx_parse_quote
 from .cpu import _detect_cpu_quote_type
+from .url import _extract_docker_compose
+
+
+# ---------------------------------------------------------------------------
+# Compose candidates (old HTML-wrapped vs new raw attest-rest)
+# ---------------------------------------------------------------------------
+
+def _compose_candidates(compose: str) -> list:
+    """Return the compose contents to try against the measurement.
+
+    Old attest-rest wraps the /docker-compose response in an HTML page (a <pre>
+    block with a trailing zero-width space); newer attest-rest serves the raw
+    file bytes. The measurement (RTMR3 on TDX, docker_compose_hash on SEV) is
+    always over the original file, so try both the raw response and the
+    HTML-extracted content and accept a match on either.
+    """
+    extracted = _extract_docker_compose(compose)
+    return [compose, extracted] if extracted != compose else [compose]
 
 
 # ---------------------------------------------------------------------------
@@ -220,16 +238,19 @@ def verify_tdx_workload(
     # vm_type column in CSV contains the environment (prod/dev)
     env = vm_type
 
+    # Try both the raw and HTML-extracted compose (old vs new attest-rest).
+    compose_variants = _compose_candidates(docker_compose_yaml)
     for entry in candidates:
-        expected = _calculate_rtmr3(docker_compose_yaml, entry["rootfs_data"], df_sha)
-        if expected == quote_rtmr3:
-            return WorkloadResult(
-                status="authentic_match",
-                template_name=entry["template_name"],
-                vm_type=entry["vm_type"],
-                artifacts_ver=entry["artifacts_ver"],
-                env=entry["vm_type"],
-            )
+        for variant in compose_variants:
+            expected = _calculate_rtmr3(variant, entry["rootfs_data"], df_sha)
+            if expected == quote_rtmr3:
+                return WorkloadResult(
+                    status="authentic_match",
+                    template_name=entry["template_name"],
+                    vm_type=entry["vm_type"],
+                    artifacts_ver=entry["artifacts_ver"],
+                    env=entry["vm_type"],
+                )
 
     return WorkloadResult(
         status="authentic_mismatch",
@@ -567,18 +588,25 @@ def verify_sev_workload(
     template_name = family["template_name"]
     vcpus = family["vcpus"]
 
-    # raw SHA256 of compose content (no YAML normalization -- matches jeeves behaviour)
-    compose_hash = hashlib.sha256(docker_compose_yaml.encode("utf-8")).hexdigest()
+    # raw SHA256 of compose content (no YAML normalization -- matches jeeves behaviour).
+    # Try both the raw and HTML-extracted compose (old vs new attest-rest).
+    compose_hashes = [
+        hashlib.sha256(c.encode("utf-8")).hexdigest()
+        for c in _compose_candidates(docker_compose_yaml)
+    ]
 
     def try_entry(entry: dict) -> bool:
         rh = entry.get("rootfs_hash", "")
-        cmdline = f"console=ttyS0 loglevel=7 docker_compose_hash={compose_hash} rootfs_hash={rh}"
-        if df_sha:
-            cmdline += f" docker_additional_files_hash={df_sha}"
-        try:
-            return _sev_calc_measurement(entry, vcpus, cmdline) == quote_measurement
-        except Exception:
-            return False
+        for compose_hash in compose_hashes:
+            cmdline = f"console=ttyS0 loglevel=7 docker_compose_hash={compose_hash} rootfs_hash={rh}"
+            if df_sha:
+                cmdline += f" docker_additional_files_hash={df_sha}"
+            try:
+                if _sev_calc_measurement(entry, vcpus, cmdline) == quote_measurement:
+                    return True
+            except Exception:
+                pass
+        return False
 
     def match_registry(reg: list) -> Optional[WorkloadResult]:
         cands = [e for e in reg if e.get("vm_type") == vm_type]

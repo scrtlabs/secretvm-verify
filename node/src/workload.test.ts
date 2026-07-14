@@ -18,6 +18,17 @@ const TEST_DATA = resolve(__dirname, "../../test-data");
 const dockerQuote = readFileSync(`${TEST_DATA}/tdx_cpu_docker_check_quote.txt`, "utf8");
 const dockerCompose = readFileSync(`${TEST_DATA}/tdx_cpu_docker_check_compose.yaml`, "utf8");
 
+// Reproduce the old attest-rest /docker-compose HTML wrapper: the file content
+// is HTML-escaped inside a <pre> block with a trailing zero-width space. The
+// verifier must extract this back to the original bytes to match the measurement.
+function htmlWrapCompose(compose: string): string {
+    const escaped = compose
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><pre>${escaped}&#8203;</pre></body></html>`;
+}
+
 // ---------------------------------------------------------------------------
 // resolveSecretVmVersion
 // ---------------------------------------------------------------------------
@@ -53,6 +64,12 @@ describe("verifyTdxWorkload", () => {
         assert.equal(r.template_name, "small");
         assert.ok(r.artifacts_ver!.startsWith("v0.0."));
         assert.equal(r.env, "prod");
+    });
+
+    it("returns authentic_match for an HTML-wrapped compose (old attest-rest)", async () => {
+        const r = await verifyTdxWorkload(dockerQuote, htmlWrapCompose(dockerCompose));
+        assert.equal(r.status, "authentic_match");
+        assert.equal(r.template_name, "small");
     });
 
     it("returns authentic_mismatch when compose is changed", async () => {
@@ -126,6 +143,13 @@ describe("verifySevWorkload", () => {
         assert.equal(r.template_name, "small");
         assert.equal(r.artifacts_ver, "v0.0.25");
         assert.equal(r.env, "prod");
+    });
+
+    it("returns authentic_match for an HTML-wrapped compose (old attest-rest)", async () => {
+        const r = await verifySevWorkload(amdDockerQuote, htmlWrapCompose(amdDockerCompose));
+        assert.equal(r.status, "authentic_match");
+        assert.equal(r.template_name, "small");
+        assert.equal(r.artifacts_ver, "v0.0.25");
     });
 
     it("returns authentic_mismatch when compose is tampered", async () => {
