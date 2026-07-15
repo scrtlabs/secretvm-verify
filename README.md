@@ -239,11 +239,14 @@ All functions return an `AttestationResult` with these fields:
 
 #### `check_secret_vm(url, product="")` / `checkSecretVm(url, product?)`
 
-End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GPU quotes, verifies both, and checks TLS and GPU bindings.
+End-to-end Secret VM verification. Fetches CPU and GPU quotes, verifies both, and checks TLS and GPU bindings.
+
+For a bare host with no explicit port, the client probes `GET /cpu` on `29343` first and falls back to `21434` — supporting both the standard topology (attest-rest on `0.0.0.0:29343`) and the host-net Caddy topology (attest-rest loopback-only, public origin `:21434`). An explicit port or an explicit TLS URL disables probing.
 
 **Parameters:**
 - `url` — VM address (e.g., `"my-vm.example.com"`, `"https://my-vm:29343"`)
 - `product` — AMD product name (`"Genoa"`, `"Milan"`, `"Turin"`). Only needed for SEV-SNP, auto-detected if omitted.
+- `tls_url` / `tlsUrl` — optional separate service TLS endpoint to verify `report_data` against, while quotes and workload still come from `url`. On the CLI this is `--tls-url` (alias `--service-url`). The result records `attestation_url` and `tls_binding_url`.
 
 **Checks performed:**
 | Check | Description |
@@ -251,7 +254,7 @@ End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GP
 | `cpu_quote_fetched` | CPU quote fetched from `/cpu` endpoint |
 | `tls_cert_fetched` | TLS certificate retrieved from the VM |
 | `cpu_quote_verified` | CPU attestation signature chain verified |
-| `tls_binding_verified` | report_data first half matches TLS cert fingerprint |
+| `tls_binding_verified` | report_data first half matches the TLS cert binding — accepts either `SHA-256(SubjectPublicKeyInfo DER)` (current) or `SHA-256(full certificate DER)` (legacy); the matched kind is recorded in `tls_binding_kind` |
 | `gpu_quote_fetched` | GPU quote fetched from `/gpu` endpoint (false if no GPU) |
 | `gpu_quote_verified` | GPU attestation verified via NVIDIA NRAS (only if GPU present) |
 | `gpu_binding_verified` | report_data second half matches GPU nonce (only if GPU present) |
@@ -473,7 +476,10 @@ Full usage:
 Usage: secretvm-verify <command> <value> [--product NAME] [--json|--raw] [--verbose|-v]
 
 Commands:
-  --secretvm <url>                  Verify a Secret VM (CPU + GPU + TLS binding)
+  --secretvm <url> [--tls-url <url>] [--docker-files <tar> | --docker-files-sha256 <hex>]
+                                    Verify a Secret VM (CPU + GPU + TLS binding + workload).
+                                    --tls-url verifies report_data against a separate service
+                                    TLS endpoint while quotes/workload still come from <url>.
   --cpu <file|--vm url>             Verify a CPU quote (auto-detect TDX vs SEV-SNP)
   --tdx <file|--vm url>             Verify an Intel TDX quote
   --sev <file|--vm url>             Verify an AMD SEV-SNP report
@@ -490,6 +496,8 @@ Commands:
 
 Options:
   --vm <url>           Fetch quote from a VM instead of a file
+  --tls-url <url>      TLS service endpoint for --secretvm binding verification.
+                       Alias: --service-url
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)
   --product NAME       AMD product name (Genoa, Milan, Turin)
   --json               Output minimal JSON (valid, checks, errors) — omits parsed report fields
