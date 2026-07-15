@@ -2,6 +2,20 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [0.12.0] — 2026-07-15
+
+### Added
+
+- **Split attestation vs inference endpoints.** New `resolveSecretVmEndpoints` / `--tls-url` (alias `--service-url`) let you verify `report_data` against a separate service TLS endpoint while quotes and workload still come from the primary VM URL. The result now records `report.attestation_url` and `report.tls_binding_url`.
+- **Automatic port fallback for bare hosts.** A host with no explicit port now probes `GET /cpu` on `29343` first, then `21434`, and binds both the quote and TLS endpoints to whichever answers — supporting the host-net Caddy topology (e.g. jedi/rytn) where attest-rest is loopback-only and the public origin is `:21434`. An explicit port or `--tls-url` disables probing and preserves prior behavior. Mirrored in Node and Python.
+- **SecretVM artifacts registry refresh.** Adds TDX `v0.0.33` GPU entries (`4xlarge_256GB_gpu` dev + prod, verified live against a running v0.0.33 GPU VM) and SEV-SNP `gpu_prod`/`gpu_dev` entries for `v0.0.33`. Synced across all three registry copies.
+
+### Changed
+
+- **TLS binding accepts SPKI or full-certificate digests.** The binding now matches on either `SHA-256(SubjectPublicKeyInfo DER)` (current) or `SHA-256(full certificate DER)` (legacy), recording `report.tls_binding_kind`. Keeps a mixed fleet (SPKI-pinned + older full-cert VMs) verifiable during rollout.
+- **Stricter service-base URL parsing** (`node url.ts` / `python vm.py`): https-only; rejects userinfo, query, fragment, out-of-range ports, and percent-encoding; validates IPv6; and rejects concrete `/cpu`, `/gpu`, `/docker-compose` paths as a service-base URL.
+- **Workload verification tolerates both docker-compose serving formats.** Older attest-rest wraps `/docker-compose` in an HTML `<pre>` block (with a trailing zero-width space); newer attest-rest serves the raw file bytes. Verification now tries both the raw response and the HTML-extracted content and accepts a match on either — the measurement (RTMR3 on TDX, `docker_compose_hash` on SEV) is bound in the quote, so the extra candidate can only confirm a legitimately measured compose, never admit a wrong one.
+
 ## [0.11.0] — 2026-07-06
 
 ### Added
