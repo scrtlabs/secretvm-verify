@@ -14,6 +14,7 @@ export {
     verifySevWorkload,
     verifyWorkload,
     formatWorkloadResult,
+    extractDstackAppId,
 } from "./workload.js";
 export type { WorkloadResult, WorkloadStatus, DockerFilesInput } from "./workload.js";
 export {

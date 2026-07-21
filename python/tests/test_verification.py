@@ -631,6 +631,69 @@ class TestCalculateRtmr3:
         assert with_prefix == lower
         assert upper == lower
 
+    APP_ID = "E418296d0E99734599a4138774E6b85e058A64FE"
+
+    def test_dstack_scheme_differs_from_attest_tool(self):
+        from secretvm.verify.workload import _calculate_rtmr3
+        without = _calculate_rtmr3(self.COMPOSE, self.ROOTFS)
+        with_id = _calculate_rtmr3(self.COMPOSE, self.ROOTFS, None, self.APP_ID)
+        assert without != with_id
+
+    def test_empty_dstack_app_id_falls_back_to_attest_tool(self):
+        from secretvm.verify.workload import _calculate_rtmr3
+        without = _calculate_rtmr3(self.COMPOSE, self.ROOTFS)
+        assert _calculate_rtmr3(self.COMPOSE, self.ROOTFS, None, "") == without
+        assert _calculate_rtmr3(self.COMPOSE, self.ROOTFS, None, None) == without
+
+    def test_dstack_app_id_normalizes_0x_and_case(self):
+        from secretvm.verify.workload import _calculate_rtmr3
+        canonical = _calculate_rtmr3(self.COMPOSE, self.ROOTFS, None, self.APP_ID)
+        assert _calculate_rtmr3(self.COMPOSE, self.ROOTFS, None, "0x" + self.APP_ID.lower()) == canonical
+        assert _calculate_rtmr3(self.COMPOSE, self.ROOTFS, None, self.APP_ID.upper()) == canonical
+
+    # Ground-truth vectors captured from real SecretVMs running small/v0.0.34.
+    # compose fixture SHA-256 = compose-hash payload; rootfs = os-image-hash
+    # payload; app-id from /info; expected RTMR3 = the value in the TDX quote.
+    _DSTACK_COMPOSE = (FIXTURES_DIR / "dstack_docker_compose.yaml").read_text()
+
+    def test_reproduces_prod_rtmr3(self):
+        from secretvm.verify.workload import _calculate_rtmr3
+        rtmr3 = _calculate_rtmr3(
+            self._DSTACK_COMPOSE,
+            "6a441f52179d66d4b82d8113a99892b1287a01ded04b2f47019750f824071cc0",
+            None,
+            "6c4ed58ae19edcc3b90a7d7bd9087aee951d1ecc",
+        )
+        assert rtmr3 == "bd88eccd83e76e65edc863ad771edd4d1bf388c5c655979774aa476dfedf611df4b05e78cb9dacbfe655dd0ed4a11313"
+
+    def test_reproduces_dev_rtmr3(self):
+        from secretvm.verify.workload import _calculate_rtmr3
+        rtmr3 = _calculate_rtmr3(
+            self._DSTACK_COMPOSE,
+            "b28b457b468cd058be0732208d2edc79e41f42fd4a0d25353aacacf016b6dc4e",
+            None,
+            "020e04828a82f7e5466c47279120e1a8d087848a",
+        )
+        assert rtmr3 == "7f3c3d4872dcea04729f51573cd30787b02efda396b8264d87082b6f9c8716423738f0038aeecb3e98f2c439664bbc08"
+
+
+class TestExtractDstackAppId:
+    def test_returns_normalized_app_id(self):
+        from secretvm.verify.workload import _extract_dstack_app_id
+        assert _extract_dstack_app_id(
+            '{"dstack_app_id":"E418296d0E99734599a4138774E6b85e058A64FE"}'
+        ) == "e418296d0e99734599a4138774e6b85e058a64fe"
+
+    def test_strips_0x_and_lowercases(self):
+        from secretvm.verify.workload import _extract_dstack_app_id
+        assert _extract_dstack_app_id('{"dstack_app_id":"0xDEAD"}') == "dead"
+
+    def test_empty_missing_or_non_json_returns_empty(self):
+        from secretvm.verify.workload import _extract_dstack_app_id
+        assert _extract_dstack_app_id('{"dstack_app_id":""}') == ""
+        assert _extract_dstack_app_id("{}") == ""
+        assert _extract_dstack_app_id("<html>not json</html>") == ""
+
 
 # ---------------------------------------------------------------------------
 # Workload verification (resolve_secretvm_version + verify_tdx_workload)
@@ -724,6 +787,19 @@ class TestVerifyTdxWorkload:
     def test_not_authentic_for_garbage_input(self, docker_compose):
         r = verify_tdx_workload("not-hex-at-all!!!", docker_compose)
         assert r.status == "not_authentic"
+
+    def test_spurious_dstack_app_id_breaks_the_match(self, docker_quote, docker_compose):
+        # The bundled quote was measured under the old (no app-id) schema, so
+        # supplying an app-id must break the RTMR3 match.
+        r = verify_tdx_workload(
+            docker_quote, docker_compose, None, None,
+            "E418296d0E99734599a4138774E6b85e058A64FE",
+        )
+        assert r.status == "authentic_mismatch"
+
+    def test_empty_dstack_app_id_keeps_old_schema_match(self, docker_quote, docker_compose):
+        r = verify_tdx_workload(docker_quote, docker_compose, None, None, "")
+        assert r.status == "authentic_match"
 
     def test_format_not_authentic(self):
         from secretvm.verify import WorkloadResult

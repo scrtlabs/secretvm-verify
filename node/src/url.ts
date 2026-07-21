@@ -203,6 +203,13 @@ export async function fetchDockerCompose(url: string): Promise<string> {
   return fetchVmEndpoint(url, "docker-compose");
 }
 
+/**
+ * Fetch the VM's /info document (JSON, e.g. `{"dstack_app_id":"…"}`).
+ */
+export async function fetchInfo(url: string): Promise<string> {
+  return fetchVmEndpoint(url, "info");
+}
+
 // getTlsCertBinding connects once and returns both the SPKI and full-certificate
 // SHA-256 digests, so report_data can be checked against either (SPKI for current
 // VMs, full certificate for pre-SPKI VMs). rejectUnauthorized enforces the platform

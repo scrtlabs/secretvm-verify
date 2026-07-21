@@ -2,7 +2,7 @@ import { AttestationResult, makeResult, orderChecks } from "./types.js";
 import { checkCpuAttestation as checkCpuAttestationDefault } from "./cpu.js";
 import { checkNvidiaGpuAttestation as checkNvidiaGpuAttestationDefault } from "./nvidia.js";
 import { checkProofOfCloud as checkProofOfCloud_ } from "./proofOfCloud.js";
-import { verifyWorkload as verifyWorkloadDefault, type DockerFilesInput } from "./workload.js";
+import { verifyWorkload as verifyWorkloadDefault, extractDstackAppId, type DockerFilesInput } from "./workload.js";
 import {
   classifyTlsBinding,
   endpointBaseUrl,
@@ -409,7 +409,19 @@ export async function checkSecretVmWithRuntime(
     const dockerCompose = await resp.text();
     checks.workload_fetched = true;
 
-    const workloadResult = await runtime.verifyWorkload(cpuData, dockerCompose, dockerFilesInput);
+    // Newer (dstack) VMs measure the app-id as RTMR3's first event. Fetch it
+    // from /info (best-effort — older images have no /info, so we fall back to
+    // the pre-dstack schema and never fail the check on a missing endpoint).
+    let dstackAppId = "";
+    try {
+      const infoResp = await runtime.fetch(`${baseUrl}/info`);
+      if (infoResp.ok) dstackAppId = extractDstackAppId(await infoResp.text());
+    } catch {
+      /* no /info endpoint — old schema */
+    }
+    if (dstackAppId) report.dstack_app_id = dstackAppId;
+
+    const workloadResult = await runtime.verifyWorkload(cpuData, dockerCompose, dockerFilesInput, dstackAppId);
     checks.workload_binding_verified = workloadResult.status === "authentic_match";
     report.workload = workloadResult;
     report.docker_compose = dockerCompose;

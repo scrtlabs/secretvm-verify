@@ -44,6 +44,11 @@ def fetch_docker_compose(url: str) -> str:
     return fetch_vm_endpoint(url, "docker-compose")
 
 
+def fetch_info(url: str) -> str:
+    """Fetch the VM's /info document (JSON, e.g. ``{"dstack_app_id":"…"}``)."""
+    return fetch_vm_endpoint(url, "info")
+
+
 def _extract_docker_compose(raw: str) -> str:
     """Legacy helper for old HTML-wrapped compose endpoints."""
     text = raw.strip()

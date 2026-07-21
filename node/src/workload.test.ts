@@ -9,7 +9,9 @@ import {
     verifyTdxWorkload,
     verifySevWorkload,
     verifyWorkload,
+    extractDstackAppId,
 } from "./workload.js";
+import { calculateRtmr3 } from "./rtmr.js";
 import { checkTdxCpuAttestation } from "./tdx.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -93,6 +95,96 @@ describe("verifyTdxWorkload", () => {
     it("returns not_authentic for a completely garbled quote", async () => {
         const r = await verifyTdxWorkload("not-hex-at-all!!!", dockerCompose);
         assert.equal(r.status, "not_authentic");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// dstack app-id (RTMR3 first event)
+// ---------------------------------------------------------------------------
+
+describe("calculateRtmr3 with dstack_app_id", () => {
+    const compose = "version: '3'\nservices: {}\n";
+    const rootfs = "ab".repeat(48);
+    const appId = "E418296d0E99734599a4138774E6b85e058A64FE";
+
+    it("the dstack (app-id) scheme differs from the attest-tool scheme", () => {
+        const withId = calculateRtmr3(compose, rootfs, undefined, appId);
+        const without = calculateRtmr3(compose, rootfs);
+        assert.notEqual(withId, without);
+    });
+
+    it("empty / undefined app-id falls back to the attest-tool schema", () => {
+        const without = calculateRtmr3(compose, rootfs);
+        assert.equal(calculateRtmr3(compose, rootfs, undefined, ""), without);
+        assert.equal(calculateRtmr3(compose, rootfs, undefined, undefined), without);
+    });
+
+    it("normalizes case and a 0x prefix", () => {
+        const canonical = calculateRtmr3(compose, rootfs, undefined, appId);
+        assert.equal(calculateRtmr3(compose, rootfs, undefined, "0x" + appId.toLowerCase()), canonical);
+        assert.equal(calculateRtmr3(compose, rootfs, undefined, appId.toUpperCase()), canonical);
+    });
+
+    // Ground-truth vectors captured from real SecretVMs running small/v0.0.34.
+    // The compose fixture's SHA-256 is the compose-hash event payload (77f748eb…);
+    // rootfs is the os-image-hash payload; the app-id comes from /info. The
+    // expected RTMR3 is the exact value in each machine's TDX quote.
+    const dstackCompose = readFileSync(`${TEST_DATA}/dstack_docker_compose.yaml`, "utf8");
+
+    it("reproduces the prod (beige-lobster) RTMR3 from the event log", () => {
+        const rtmr3 = calculateRtmr3(
+            dstackCompose,
+            "6a441f52179d66d4b82d8113a99892b1287a01ded04b2f47019750f824071cc0",
+            undefined,
+            "6c4ed58ae19edcc3b90a7d7bd9087aee951d1ecc",
+        );
+        assert.equal(rtmr3, "bd88eccd83e76e65edc863ad771edd4d1bf388c5c655979774aa476dfedf611df4b05e78cb9dacbfe655dd0ed4a11313");
+    });
+
+    it("reproduces the dev (gray-tyrannosaurus) RTMR3 from the event log", () => {
+        const rtmr3 = calculateRtmr3(
+            dstackCompose,
+            "b28b457b468cd058be0732208d2edc79e41f42fd4a0d25353aacacf016b6dc4e",
+            undefined,
+            "020e04828a82f7e5466c47279120e1a8d087848a",
+        );
+        assert.equal(rtmr3, "7f3c3d4872dcea04729f51573cd30787b02efda396b8264d87082b6f9c8716423738f0038aeecb3e98f2c439664bbc08");
+    });
+});
+
+describe("extractDstackAppId", () => {
+    it("returns the normalized app-id", () => {
+        assert.equal(
+            extractDstackAppId('{"dstack_app_id":"E418296d0E99734599a4138774E6b85e058A64FE"}'),
+            "e418296d0e99734599a4138774e6b85e058a64fe",
+        );
+    });
+    it("strips a 0x prefix and lowercases", () => {
+        assert.equal(extractDstackAppId('{"dstack_app_id":"0xDEAD"}'), "dead");
+    });
+    it("returns '' for empty, missing, or non-JSON bodies", () => {
+        assert.equal(extractDstackAppId('{"dstack_app_id":""}'), "");
+        assert.equal(extractDstackAppId("{}"), "");
+        assert.equal(extractDstackAppId("<html>not json</html>"), "");
+    });
+});
+
+describe("verifyTdxWorkload with dstack_app_id", () => {
+    it("a spurious app-id turns an otherwise-matching workload into a mismatch", async () => {
+        // The bundled quote was measured under the old (no app-id) schema, so
+        // supplying an app-id must break the RTMR3 match.
+        const r = await verifyTdxWorkload(
+            dockerQuote,
+            dockerCompose,
+            undefined,
+            "E418296d0E99734599a4138774E6b85e058A64FE",
+        );
+        assert.equal(r.status, "authentic_mismatch");
+    });
+
+    it("an empty app-id keeps the old-schema match", async () => {
+        const r = await verifyTdxWorkload(dockerQuote, dockerCompose, undefined, "");
+        assert.equal(r.status, "authentic_match");
     });
 });
 

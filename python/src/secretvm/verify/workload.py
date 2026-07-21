@@ -35,6 +35,41 @@ def _compose_candidates(compose: str) -> list:
 
 
 # ---------------------------------------------------------------------------
+# dstack app-id
+# ---------------------------------------------------------------------------
+
+def _extract_dstack_app_id(info_json: str) -> str:
+    """Pull ``dstack_app_id`` out of a VM's /info JSON, normalized to lowercase
+    hex (``0x`` prefix stripped).
+
+    Returns ``""`` when the field is missing, empty, or the body is not the
+    expected JSON -- callers treat ``""`` as "no app-id" and fall back to the
+    pre-dstack RTMR3 schema.
+    """
+    try:
+        parsed = json.loads(info_json)
+        app_id = parsed.get("dstack_app_id")
+        if isinstance(app_id, str) and app_id.strip():
+            return app_id.strip().lower().removeprefix("0x")
+    except Exception:
+        pass
+    return ""
+
+
+def _fetch_dstack_app_id(url: str) -> str:
+    """Best-effort fetch of a VM's dstack_app_id from /info.
+
+    Any failure (older VMs have no /info endpoint) yields ``""`` so
+    verification falls back to the pre-dstack RTMR3 schema.
+    """
+    from .url import fetch_info
+    try:
+        return _extract_dstack_app_id(fetch_info(url))
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # RTMR replay
 # ---------------------------------------------------------------------------
 
@@ -55,25 +90,77 @@ def _replay_rtmr(history: list) -> str:
     return bytes(mr).hex()
 
 
+# dstack event type for RTMR3 app events (see dstack cc-eventlog): a fixed
+# non-TCG constant, serialized little-endian (the measuring host is x86_64 TDX).
+_DSTACK_EVENT_TYPE = 0x08000001
+
+
+def _hex_to_bytes(hex_str: str) -> bytes:
+    return bytes.fromhex(hex_str.lower().removeprefix("0x"))
+
+
+def _dstack_event_digest(event: str, payload: bytes) -> str:
+    """dstack-util event digest (mirrors eventlog::TdxEventLog::event_digest):
+
+        sha384(event_type.to_le_bytes() || b":" || event || b":" || payload)
+
+    The 48-byte result is what gets extended into RTMR3, in place of the raw
+    hash that attest-tool's ``extendrt`` extends directly.
+    """
+    h = hashlib.sha384()
+    h.update(struct.pack("<I", _DSTACK_EVENT_TYPE))
+    h.update(b":")
+    h.update(event.encode("utf-8"))
+    h.update(b":")
+    h.update(payload)
+    return h.hexdigest()
+
+
 def _calculate_rtmr3(
     docker_compose: str | bytes,
     rootfs_data: str,
     docker_files_sha256: Optional[str] = None,
+    dstack_app_id: Optional[str] = None,
 ) -> str:
     """Calculate expected RTMR3 from docker-compose, rootfs_data, and
     (optionally) a docker-files archive digest.
 
-    Replay log order (matches the TDX initramfs in secret-vm-build):
+    Two replay schemes; which one a VM uses is decided by its init
+    (``KMS == "dstack"|"gramine"`` <=> a non-empty dstack app-id):
+
+    attest-tool path (no app-id -- original SecretVM images) extends RTMR3
+    with the RAW hash bytes (padded to 48):
       1. SHA-256 of docker-compose bytes
       2. rootfs_data (hex)
-      3. SHA-256 of docker-files archive  (only when provided)
+      3. SHA-256 of docker-files archive   (only when provided)
+
+    dstack-util path (app-id present -- from the VM's /info) extends RTMR3
+    with a dstack event *digest* (not the raw hash), in order:
+      1. app-id            payload = app-id bytes
+      2. compose-hash      payload = SHA-256 of docker-compose bytes
+      3. os-image-hash     payload = rootfs_data bytes
+      4. docker-files-hash payload = SHA-256 of docker-files archive (when provided)
     """
     compose_bytes = docker_compose if isinstance(docker_compose, bytes) else docker_compose.encode("utf-8")
-    sha256_hex = hashlib.sha256(compose_bytes).hexdigest()
+    compose_sha256 = hashlib.sha256(compose_bytes)
     rootfs_hex = rootfs_data.lower().removeprefix("0x")
-    log = [sha256_hex, rootfs_hex]
-    if docker_files_sha256:
-        log.append(docker_files_sha256.lower().removeprefix("0x"))
+    df_hex = docker_files_sha256.lower().removeprefix("0x") if docker_files_sha256 else None
+
+    if dstack_app_id:
+        # dstack-util extends the per-event digest, not the raw hash.
+        log = [
+            _dstack_event_digest("app-id", _hex_to_bytes(dstack_app_id)),
+            _dstack_event_digest("compose-hash", compose_sha256.digest()),
+            _dstack_event_digest("os-image-hash", _hex_to_bytes(rootfs_hex)),
+        ]
+        if df_hex:
+            log.append(_dstack_event_digest("docker-files-hash", _hex_to_bytes(df_hex)))
+        return _replay_rtmr(log)
+
+    # attest-tool extends the raw hash (padded to 48 by _replay_rtmr).
+    log = [compose_sha256.hexdigest(), rootfs_hex]
+    if df_hex:
+        log.append(df_hex)
     return _replay_rtmr(log)
 
 
@@ -176,6 +263,7 @@ def verify_tdx_workload(
     docker_compose_yaml: str = "",
     docker_files: Optional[bytes] = None,
     docker_files_sha256: Optional[str] = None,
+    dstack_app_id: Optional[str] = None,
 ) -> WorkloadResult:
     """Verify that a TDX quote was produced by a known SecretVM running the
     given docker-compose YAML.
@@ -197,6 +285,10 @@ def verify_tdx_workload(
     if is_vm_url(data_or_url):
         data = fetch_cpu_quote(data_or_url)
         docker_compose_yaml = docker_compose_yaml or fetch_docker_compose(data_or_url)
+        # Newer VMs measure the dstack app-id as RTMR3's first event; fetch it
+        # from /info when the caller didn't already supply it.
+        if dstack_app_id is None:
+            dstack_app_id = _fetch_dstack_app_id(data_or_url)
     else:
         data = data_or_url
         if not docker_compose_yaml:
@@ -242,7 +334,7 @@ def verify_tdx_workload(
     compose_variants = _compose_candidates(docker_compose_yaml)
     for entry in candidates:
         for variant in compose_variants:
-            expected = _calculate_rtmr3(variant, entry["rootfs_data"], df_sha)
+            expected = _calculate_rtmr3(variant, entry["rootfs_data"], df_sha, dstack_app_id)
             if expected == quote_rtmr3:
                 return WorkloadResult(
                     status="authentic_match",
@@ -668,6 +760,7 @@ def verify_workload(
     docker_compose_yaml: str = "",
     docker_files: Optional[bytes] = None,
     docker_files_sha256: Optional[str] = None,
+    dstack_app_id: Optional[str] = None,
 ) -> WorkloadResult:
     """Verify that a CPU quote was produced by a known SecretVM running the
     given docker-compose YAML.
@@ -688,13 +781,16 @@ def verify_workload(
     if is_vm_url(data_or_url):
         data = fetch_cpu_quote(data_or_url)
         docker_compose_yaml = docker_compose_yaml or fetch_docker_compose(data_or_url)
+        # dstack_app_id (RTMR3's first event on newer VMs) only affects TDX.
+        if dstack_app_id is None:
+            dstack_app_id = _fetch_dstack_app_id(data_or_url)
     else:
         data = data_or_url
         if not docker_compose_yaml:
             return WorkloadResult(status="not_authentic")
     quote_type = _detect_cpu_quote_type(data)
     if quote_type == "TDX":
-        return verify_tdx_workload(data, docker_compose_yaml, docker_files, docker_files_sha256)
+        return verify_tdx_workload(data, docker_compose_yaml, docker_files, docker_files_sha256, dstack_app_id)
     if quote_type == "SEV-SNP":
         return verify_sev_workload(data, docker_compose_yaml, docker_files, docker_files_sha256)
     return WorkloadResult(status="not_authentic")

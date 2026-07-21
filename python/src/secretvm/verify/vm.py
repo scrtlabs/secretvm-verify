@@ -370,8 +370,22 @@ def check_secret_vm(
         docker_compose = resp.text
         checks["workload_fetched"] = True
 
+        # Newer (dstack) VMs measure the app-id as RTMR3's first event. Fetch it
+        # from /info (best-effort -- older images have no /info, so we fall back
+        # to the pre-dstack schema and never fail the check on a missing endpoint).
+        from .workload import _extract_dstack_app_id
+        dstack_app_id = ""
+        try:
+            info_resp = pkg.requests.get(f"{base_url}/info", timeout=15, verify=True)
+            info_resp.raise_for_status()
+            dstack_app_id = _extract_dstack_app_id(info_resp.text)
+        except Exception:
+            pass  # no /info endpoint -- old schema
+        if dstack_app_id:
+            report["dstack_app_id"] = dstack_app_id
+
         workload_result = pkg.verify_workload(
-            cpu_data, docker_compose, docker_files, docker_files_sha256,
+            cpu_data, docker_compose, docker_files, docker_files_sha256, dstack_app_id,
         )
         checks["workload_binding_verified"] = workload_result.status == "authentic_match"
         report["workload"] = {

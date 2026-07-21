@@ -2,6 +2,17 @@
 
 All notable changes to `secretvm-verify` (both the Node and Python packages) are documented here.
 
+## [Unreleased]
+
+### Added
+
+- **dstack RTMR3 measurement scheme.** Newer SecretVM images (dstack/gramine KMS) extend RTMR3 via `dstack-util` instead of `attest-tool`, which changes how each event is measured. The verifier now supports both schemes and picks between them by whether the VM reports a `dstack_app_id`:
+  - **attest-tool (original images):** each event extends RTMR3 with the **raw hash** bytes — `sha256(compose)`, `rootfs_data`, `sha256(docker-files)?`.
+  - **dstack-util (new images):** each event extends RTMR3 with a **dstack event digest** `sha384(LE32(0x08000001) ‖ ":" ‖ event_name ‖ ":" ‖ payload)`, for events `app-id`, `compose-hash`, `os-image-hash`, `docker-files-hash?` (payloads = the raw hash bytes; `app-id` payload = the dstack app-id).
+
+  The `dstack_app_id` is fetched from the VM's `GET /info` endpoint (`{"dstack_app_id":"…"}`) and recorded as `report.dstack_app_id`. When `/info` is absent or reports an empty app-id (older images), the attest-tool scheme is used — so a mixed fleet stays verifiable. A new `--dstack-app-id <hex>` flag (Node CLI) supplies the id for offline (file-based) `--verify-workload`. Verified end-to-end against live `small/v0.0.34` prod and dev VMs. Mirrored in Node and Python.
+- **Registry: `small` `v0.0.34` (TDX, prod + dev).** Added entries for the `small` template at `v0.0.34`.
+
 ## [0.12.0] — 2026-07-15
 
 ### Added

@@ -327,6 +327,13 @@ Looks up a TDX quote in the SecretVM artifact registry. Returns the matching tem
 
 Verifies that a TDX quote was produced by a known SecretVM running a specific `docker-compose.yaml`. Replays the RTMR3 measurement from the compose content and compares it to the value in the quote.
 
+There are two RTMR3 measurement schemes; the verifier picks between them by whether the VM reports a `dstack_app_id` (read from its `GET /info` endpoint, `{"dstack_app_id":"…"}`, and fetched automatically when verifying via a URL):
+
+- **attest-tool** (original images, no app-id): each event extends RTMR3 with the **raw hash** — `sha256(compose)`, then `rootfs_data`, then `sha256(docker-files)` if present.
+- **dstack-util** (newer dstack/gramine images, app-id present): each event extends RTMR3 with a **dstack event digest** `sha384(LE32(0x08000001) ‖ ":" ‖ name ‖ ":" ‖ payload)`, for events `app-id`, `compose-hash`, `os-image-hash`, and `docker-files-hash` (when present).
+
+When `/info` is absent or the id is empty (older images), the attest-tool scheme applies. Pass `dstack_app_id` explicitly (or `--dstack-app-id <hex>` on the CLI) for offline verification of a dstack VM.
+
 **Parameters:**
 - `data` — Hex-encoded TDX quote
 - `docker_compose_yaml` / `dockerComposeYaml` — Contents of the `docker-compose.yaml` file
@@ -486,8 +493,10 @@ Commands:
   --gpu <file|--vm url>             Verify an NVIDIA GPU attestation
   --resolve-version, -rv <file|--vm url>
                                     Resolve SecretVM version from TDX or AMD SEV-SNP quote
-  --verify-workload, -vw <file|--vm url> [--compose <file>] [--docker-files <tar> | --docker-files-sha256 <hex>]
-                                    Verify workload against a docker-compose (fetched from VM if --vm)
+  --verify-workload, -vw <file|--vm url> [--compose <file>] [--docker-files <tar> | --docker-files-sha256 <hex>] [--dstack-app-id <hex>]
+                                    Verify workload against a docker-compose (fetched from VM if --vm).
+                                    --dstack-app-id supplies the dstack app-id (RTMR3's first event on
+                                    newer VMs) for offline verification; fetched from /info with --vm.
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain
   --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file

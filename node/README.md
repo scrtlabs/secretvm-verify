@@ -198,9 +198,14 @@ Looks up a quote in the SecretVM artifact registry. Returns the matching templat
 
 Auto-detects quote type and verifies that it was produced by a known SecretVM running the given docker-compose. The optional third argument `{ dockerFiles?, dockerFilesSha256? }` supports TDX VMs that bake a Dockerfiles archive into the image — pass the raw tar bytes (they get SHA-256'd client-side) or a precomputed hex digest. SEV-SNP ignores it.
 
-#### `verifyTdxWorkload(data, dockerComposeYaml, dockerFilesInput?)`
+#### `verifyTdxWorkload(data, dockerComposeYaml, dockerFilesInput?, dstackAppId?)`
 
-TDX-specific workload verification. Same optional `{ dockerFiles?, dockerFilesSha256? }` argument as `verifyWorkload`; when provided, the SHA-256 of the archive is appended to the RTMR3 replay as `log[2]`.
+TDX-specific workload verification. Same optional `{ dockerFiles?, dockerFilesSha256? }` argument as `verifyWorkload`. The optional fourth argument `dstackAppId` selects the RTMR3 measurement scheme:
+
+- **omitted/empty** → attest-tool scheme: RTMR3 extends the **raw hashes** `sha256(compose)`, `rootfs_data`, `sha256(docker-files)?`.
+- **present** → dstack-util scheme: RTMR3 extends **dstack event digests** `sha384(LE32(0x08000001) ‖ ":" ‖ name ‖ ":" ‖ payload)` for events `app-id`, `compose-hash`, `os-image-hash`, `docker-files-hash?`.
+
+When `data` is a VM URL, the app-id is fetched automatically from `GET /info` (`{"dstack_app_id":"…"}`); pass it explicitly for offline verification.
 
 #### `verifySevWorkload(data, dockerComposeYaml, dockerFilesInput?)`
 

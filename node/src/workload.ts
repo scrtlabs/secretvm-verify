@@ -5,6 +5,7 @@ import {
     extractDockerCompose,
     fetchCpuQuote,
     fetchDockerCompose,
+    fetchInfo,
     isVmUrl,
     parseServiceBaseUrl,
 } from "./url.js";
@@ -31,6 +32,42 @@ const SECRET_VM_PORT = 29343;
 function composeCandidates(compose: string): string[] {
     const extracted = extractDockerCompose(compose);
     return extracted !== compose ? [compose, extracted] : [compose];
+}
+
+// ---------------------------------------------------------------------------
+// dstack app-id
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull `dstack_app_id` out of a VM's /info JSON, normalized to lowercase hex
+ * (0x prefix stripped). Returns "" when the field is missing, empty, or the
+ * body is not the expected JSON — callers treat "" as "no app-id" and fall
+ * back to the pre-dstack RTMR3 schema.
+ */
+export function extractDstackAppId(infoJson: string): string {
+    try {
+        const parsed = JSON.parse(infoJson);
+        const id = parsed?.dstack_app_id;
+        if (typeof id === "string" && id.trim() !== "") {
+            return id.trim().toLowerCase().replace(/^0x/, "");
+        }
+    } catch {
+        /* not JSON / no /info — fall back to the old schema */
+    }
+    return "";
+}
+
+/**
+ * Best-effort fetch of a VM's dstack_app_id from /info. Any failure (older VMs
+ * have no /info endpoint) resolves to "" so verification falls back to the
+ * pre-dstack RTMR3 schema.
+ */
+async function fetchDstackAppId(url: string): Promise<string> {
+    try {
+        return extractDstackAppId(await fetchInfo(url));
+    } catch {
+        return "";
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,12 +174,17 @@ export async function verifyTdxWorkload(
     quoteHexOrUrl: string,
     dockerComposeYaml?: string,
     dockerFilesInput?: DockerFilesInput,
+    dstackAppId?: string,
 ): Promise<WorkloadResult> {
     let quoteHex: string;
     let compose: string;
+    let appId = dstackAppId;
     if (isVmUrl(quoteHexOrUrl)) {
         quoteHex = await fetchCpuQuote(quoteHexOrUrl);
         compose = dockerComposeYaml ?? await fetchDockerCompose(quoteHexOrUrl);
+        // Newer VMs measure the dstack app-id as RTMR3's first event; fetch it
+        // from /info when the caller didn't already supply it.
+        if (appId === undefined) appId = await fetchDstackAppId(quoteHexOrUrl);
     } else {
         quoteHex = quoteHexOrUrl;
         if (!dockerComposeYaml) return { status: "not_authentic" };
@@ -192,7 +234,7 @@ export async function verifyTdxWorkload(
     const composeVariants = composeCandidates(compose);
     for (const entry of candidates) {
         for (const variant of composeVariants) {
-            const expected = calculateRtmr3(variant, entry.rootfs_data, dockerFilesSha256);
+            const expected = calculateRtmr3(variant, entry.rootfs_data, dockerFilesSha256, appId);
             if (expected === quoteRtmr3) {
                 return {
                     status: "authentic_match",
@@ -433,18 +475,21 @@ export async function verifyWorkload(
     quoteDataOrUrl: string,
     dockerComposeYaml?: string,
     dockerFilesInput?: DockerFilesInput,
+    dstackAppId?: string,
 ): Promise<WorkloadResult> {
     if (isVmUrl(quoteDataOrUrl)) {
         const quoteData = await fetchCpuQuote(quoteDataOrUrl);
         const compose = dockerComposeYaml ?? await fetchDockerCompose(quoteDataOrUrl);
+        // dstack_app_id (RTMR3's first event on newer VMs) only affects TDX.
+        const appId = dstackAppId ?? await fetchDstackAppId(quoteDataOrUrl);
         const type = detectCpuQuoteType(quoteData);
-        if (type === "TDX") return verifyTdxWorkload(quoteData, compose, dockerFilesInput);
+        if (type === "TDX") return verifyTdxWorkload(quoteData, compose, dockerFilesInput, appId);
         if (type === "SEV-SNP") return verifySevWorkload(quoteData, compose, dockerFilesInput);
         return { status: "not_authentic" };
     }
     if (!dockerComposeYaml) return { status: "not_authentic" };
     const type = detectCpuQuoteType(quoteDataOrUrl);
-    if (type === "TDX") return verifyTdxWorkload(quoteDataOrUrl, dockerComposeYaml, dockerFilesInput);
+    if (type === "TDX") return verifyTdxWorkload(quoteDataOrUrl, dockerComposeYaml, dockerFilesInput, dstackAppId);
     if (type === "SEV-SNP") return verifySevWorkload(quoteDataOrUrl, dockerComposeYaml, dockerFilesInput);
     return { status: "not_authentic" };
 }

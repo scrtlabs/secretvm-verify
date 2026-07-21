@@ -15,6 +15,7 @@ import {
   resolveAmdSevVersion,
   verifyWorkload,
   formatWorkloadResult,
+  extractDstackAppId,
 } from "./index.js";
 import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
 import { endpointBaseUrl, parseServiceBaseUrl } from "./url.js";
@@ -131,6 +132,10 @@ if (dockerFilesSha256) {
 } else if (dockerFilesPath) {
   dockerFilesInput.dockerFiles = readFileSync(dockerFilesPath);
 }
+// `--dstack-app-id <hex>` supplies the dstack app-id measured as RTMR3's first
+// event on newer VMs. Fetched from the VM's /info endpoint automatically when
+// verifying via --vm; this flag is for offline (file-based) verification.
+const dstackAppIdFlag = getFlagValue("--dstack-app-id");
 // Opt-in proof-of-cloud (POSTs the CPU quote to the community trust-server
 // peers' /check_quote). Off by default across all verbs; pass --proof-of-cloud to enable.
 const checkPoc = getFlag("--proof-of-cloud");
@@ -198,12 +203,14 @@ Commands:
   --gpu <file|--vm url>             Verify an NVIDIA GPU attestation
   --resolve-version, -rv <file|--vm url>
                                     Resolve SecretVM version from TDX or AMD SEV-SNP quote
-  --verify-workload, -vw <file|--vm url> [--compose <file>] [--docker-files <tar> | --docker-files-sha256 <hex>]
+  --verify-workload, -vw <file|--vm url> [--compose <file>] [--docker-files <tar> | --docker-files-sha256 <hex>] [--dstack-app-id <hex>]
                                     Verify workload against a docker-compose (fetched from VM if --vm).
                                     --docker-files accepts a path to the Dockerfiles archive; its SHA-256 is
                                     computed client-side. --docker-files-sha256 supplies the digest directly
                                     (skips the file read). On TDX the digest extends RTMR3; on SEV-SNP it is
                                     appended to the kernel cmdline that feeds the launch measurement.
+                                    --dstack-app-id supplies the dstack app-id (RTMR3's first event on newer
+                                    VMs) for offline verification; fetched from /info automatically with --vm.
   --check-agent <id> --chain <name>
                                     Resolve and verify an ERC-8004 agent on-chain
   --agent <file>                    Verify an ERC-8004 agent from a metadata JSON file
@@ -376,6 +383,16 @@ try {
       if (!composeFile) { console.log(USAGE); process.exit(1); }
       composeData = readFileSync(composeFile, "utf8");
     }
+    // dstack app-id (RTMR3's first event on newer VMs). Prefer the explicit
+    // flag; otherwise fetch /info from the VM (best-effort — older VMs 404).
+    let dstackAppId = dstackAppIdFlag ?? "";
+    if (!dstackAppId && vmUrl) {
+      try {
+        dstackAppId = extractDstackAppId(await fetchFromVm("info"));
+      } catch {
+        /* no /info endpoint — fall back to the pre-dstack schema */
+      }
+    }
     // Uses the shared dockerFilesInput parsed at the top. For TDX the digest
     // becomes RTMR3 log[2]; for SEV it is appended as
     // `docker_additional_files_hash=<hex>` to the kernel cmdline that feeds
@@ -385,12 +402,12 @@ try {
       // Step 1: cryptographic quote verification
       const quoteResult = await checkSevCpuAttestation(quoteData, product, reloadAmdKds, strict);
       if (raw) {
-        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput, dstackAppId);
         console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
         process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
       }
       if (json) {
-        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput, dstackAppId);
         console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
         process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
       }
@@ -399,7 +416,7 @@ try {
         process.exit(1);
       }
       // Workload verification — authoritative; also identifies VM version
-      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput, dstackAppId);
       const src = dockerComposeSource(vmUrl);
       if (workloadResult.status === "authentic_match") {
         console.log(`✅ Authentic SecretVM confirmed: ${workloadResult.template_name} ${workloadResult.artifacts_ver} (${workloadResult.env})`);
@@ -425,12 +442,12 @@ try {
     } else {
       const quoteResult = await checkTdxCpuAttestation(quoteData);
       if (raw) {
-        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput, dstackAppId);
         console.log(JSON.stringify({ quote: quoteResult, workload: workloadResult }, null, 2));
         process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
       }
       if (json) {
-        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+        const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput, dstackAppId);
         console.log(JSON.stringify({ quote: minimalJson(quoteResult), workload: workloadResult }, null, 2));
         process.exit(quoteResult.valid && workloadResult.status === "authentic_match" ? 0 : 1);
       }
@@ -438,7 +455,7 @@ try {
         console.log("🚫 Attestation doesn't belong to an authentic SecretVM");
         process.exit(1);
       }
-      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput);
+      const workloadResult = await verifyWorkload(quoteData, composeData, dockerFilesInput, dstackAppId);
       console.log(formatWorkloadResult(workloadResult, vmUrl));
       if (showCompose) {
         console.log("\nDocker compose:");
