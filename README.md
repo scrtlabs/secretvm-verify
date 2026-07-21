@@ -336,14 +336,14 @@ When `/info` is absent or the id is empty (older images), the attest-tool scheme
 
 #### Is the app-id itself attested?
 
-Only on TDX, and only on a match. The app-id is read from the VM's own `/info`, so it is not trustworthy on its face. On TDX it becomes trustworthy the moment the workload check passes: it was an input to the RTMR3 replay that reproduced a hardware-signed measurement, so no other value could have produced that quote.
+Only on TDX, and only when both the quote and the workload check pass. The app-id is read from the VM's own `/info`, so it is not trustworthy on its face. On TDX it becomes trustworthy once the quote verifies and the workload check passes: it was an input to the RTMR3 replay that reproduced a hardware-signed measurement, so no other value could have produced that quote.
 
 On **SEV-SNP it is never attested.** SEV-SNP's launch measurement covers the kernel cmdline (`docker_compose_hash=…`, `rootfs_hash=…`) and carries no app-id at all, so a `valid: true` SEV result tells you nothing about the app-id the VM reported. dstack KMS *is* supported on AMD, but there it governs key release — the KMS recomputes the launch measurement before handing over keys — rather than being measured into the quote.
 
 `check_secret_vm` / `checkSecretVm` therefore report both fields together:
 
-- `report.dstack_app_id` — the value the VM served, present whenever `/info` returned one.
-- `report.dstack_app_id_verified` — `true` only for a TDX quote whose workload check returned `authentic_match`; `false` on SEV-SNP and on any failed or mismatched TDX replay.
+- `report.dstack_app_id` — the value the VM served on `/info`.
+- `report.dstack_app_id_verified` — `true` only for a TDX quote that itself verified *and* whose workload check returned `authentic_match`; `false` on SEV-SNP, on a failed or mismatched TDX replay, and on a TDX quote whose signature did not verify. That last case matters because the workload replay compares measurements without checking the DCAP signature, so `authentic_match` alone does not imply the quote was hardware-signed.
 
 Treat `dstack_app_id` as unverified input unless `dstack_app_id_verified` is `true`.
 

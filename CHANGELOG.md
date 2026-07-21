@@ -6,7 +6,7 @@ All notable changes to `secretvm-verify` (both the Node and Python packages) are
 
 ### Fixed
 
-- **`report.dstack_app_id` is no longer reported as if it were attested.** The app-id is read from the VM's own `/info`, and it only becomes trustworthy when it is an input to a TDX RTMR3 replay that reproduces the quote. SEV-SNP has no app-id in its launch measurement (dstack KMS on AMD governs key release, not the measurement), so a `valid: true` SEV result proved nothing about it; the same held for any failed or mismatched TDX replay. Both SDKs now emit `report.dstack_app_id_verified` alongside the value — `true` only for TDX + `authentic_match`, `false` otherwise — and the field is set after the workload check rather than before it.
+- **`report.dstack_app_id` is no longer reported as if it were attested.** The app-id is read from the VM's own `/info`, and it only becomes trustworthy when it is an input to a TDX RTMR3 replay that reproduces the quote. SEV-SNP has no app-id in its launch measurement (dstack KMS on AMD governs key release, not the measurement), so a `valid: true` SEV result proved nothing about it; the same held for any failed or mismatched TDX replay. Both SDKs now emit `report.dstack_app_id_verified` alongside the value — `true` only when the CPU quote verified, the quote is TDX, and the workload check returned `authentic_match`; `false` otherwise — and the field is set after the workload check rather than before it. The CPU-validity condition matters because verification does not stop at a failed CPU quote and the workload replay compares measurements without checking the DCAP signature, so `authentic_match` alone does not imply a hardware-signed quote.
 
 ## [0.13.0] — 2026-07-21
 

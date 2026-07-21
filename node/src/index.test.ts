@@ -944,7 +944,12 @@ describe("dstack_app_id provenance", () => {
   // Runtime serving /info with an app-id, with the CPU type and the workload
   // verdict dictated by the test. `appId` of "" simulates a pre-dstack image
   // whose /info is absent.
-  function runtimeWith(attestationType: string, workloadStatus: string, appId = APP_ID) {
+  function runtimeWith(
+    attestationType: string,
+    workloadStatus: string,
+    appId = APP_ID,
+    cpuValid = true,
+  ) {
     return {
       fetch: async (input: any) => {
         const u = String(input);
@@ -964,10 +969,10 @@ describe("dstack_app_id provenance", () => {
         certificate: Buffer.alloc(32),
       }),
       checkCpuAttestation: async () => ({
-        valid: true,
+        valid: cpuValid,
         report: {},
         attestationType,
-        errors: [],
+        errors: cpuValid ? [] : ["quote signature verification failed"],
       }),
       checkNvidiaGpuAttestation: async () => ({ valid: false }),
       verifyWorkload: async () => ({ status: workloadStatus }),
@@ -1004,6 +1009,21 @@ describe("dstack_app_id provenance", () => {
       "host.example",
       {},
       runtimeWith("TDX", "authentic_mismatch"),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
+  });
+
+  it("marks the app-id UNverified when the CPU quote itself failed", async () => {
+    // Verification does not stop at a failed CPU quote, and verifyTdxWorkload
+    // replays measurements without checking the DCAP signature — so a forged
+    // quote carrying copied measurements can reach authentic_match. The app-id
+    // is only proven by a replay of a *hardware-signed* quote.
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match", APP_ID, false),
     );
     assert.equal(r.report.dstack_app_id, APP_ID);
     assert.equal(r.report.dstack_app_id_verified, false);

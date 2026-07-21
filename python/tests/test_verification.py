@@ -618,14 +618,15 @@ class TestDstackAppIdProvenance:
 
     APP_ID = "e418296d0e99734599a4138774e6b85e058a64fe"
 
-    def _run(self, cpu_type, workload_status, serve_info=True):
+    def _run(self, cpu_type, workload_status, serve_info=True, cpu_valid=True):
         from secretvm.verify import WorkloadResult
 
         tls_fp, _, _, _, no_gpu_json, _, _ = _make_test_data()
         cpu_result = AttestationResult(
-            valid=True, attestation_type=cpu_type,
-            checks={"quote_parsed": True, "quote_verified": True},
+            valid=cpu_valid, attestation_type=cpu_type,
+            checks={"quote_parsed": True, "quote_verified": cpu_valid},
             report={"report_data": "aa" * 32 + "bb" * 32, "mr_td": "cc" * 48},
+            errors=[] if cpu_valid else ["quote signature verification failed"],
         )
         workload = WorkloadResult(
             status=workload_status, template_name="small",
@@ -666,6 +667,16 @@ class TestDstackAppIdProvenance:
 
     def test_tdx_mismatch_does_not_verify_the_app_id(self):
         result = self._run("TDX", "authentic_mismatch")
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
+
+    def test_failed_cpu_quote_does_not_verify_the_app_id(self):
+        # Verification does not stop at a failed CPU quote, and
+        # verify_tdx_workload replays measurements without checking the DCAP
+        # signature -- so a forged quote carrying copied measurements can reach
+        # authentic_match. The app-id is only proven by a replay of a
+        # *hardware-signed* quote.
+        result = self._run("TDX", "authentic_match", cpu_valid=False)
         assert result.report["dstack_app_id"] == self.APP_ID
         assert result.report["dstack_app_id_verified"] is False
 
