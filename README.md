@@ -334,6 +334,19 @@ There are two RTMR3 measurement schemes; the verifier picks between them by whet
 
 When `/info` is absent or the id is empty (older images), the attest-tool scheme applies. Pass `dstack_app_id` explicitly (or `--dstack-app-id <hex>` on the CLI) for offline verification of a dstack VM.
 
+#### Is the app-id itself attested?
+
+Only on TDX, and only on a match. The app-id is read from the VM's own `/info`, so it is not trustworthy on its face. On TDX it becomes trustworthy the moment the workload check passes: it was an input to the RTMR3 replay that reproduced a hardware-signed measurement, so no other value could have produced that quote.
+
+On **SEV-SNP it is never attested.** SEV-SNP's launch measurement covers the kernel cmdline (`docker_compose_hash=…`, `rootfs_hash=…`) and carries no app-id at all, so a `valid: true` SEV result tells you nothing about the app-id the VM reported. dstack KMS *is* supported on AMD, but there it governs key release — the KMS recomputes the launch measurement before handing over keys — rather than being measured into the quote.
+
+`check_secret_vm` / `checkSecretVm` therefore report both fields together:
+
+- `report.dstack_app_id` — the value the VM served, present whenever `/info` returned one.
+- `report.dstack_app_id_verified` — `true` only for a TDX quote whose workload check returned `authentic_match`; `false` on SEV-SNP and on any failed or mismatched TDX replay.
+
+Treat `dstack_app_id` as unverified input unless `dstack_app_id_verified` is `true`.
+
 **Parameters:**
 - `data` — Hex-encoded TDX quote
 - `docker_compose_yaml` / `dockerComposeYaml` — Contents of the `docker-compose.yaml` file

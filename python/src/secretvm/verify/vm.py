@@ -381,13 +381,21 @@ def check_secret_vm(
             dstack_app_id = _extract_dstack_app_id(info_resp.text)
         except Exception:
             pass  # no /info endpoint -- old schema
-        if dstack_app_id:
-            report["dstack_app_id"] = dstack_app_id
-
         workload_result = pkg.verify_workload(
             cpu_data, docker_compose, docker_files, docker_files_sha256, dstack_app_id,
         )
         checks["workload_binding_verified"] = workload_result.status == "authentic_match"
+        # The app-id is only *proven* when it was an input to a TDX RTMR3 replay
+        # that reproduced the quote. SEV-SNP has no app-id in its launch
+        # measurement, and a failed TDX replay proves nothing either -- in both
+        # cases the value is whatever the VM chose to serve on /info. Report it
+        # (it is useful for diagnosis) but never without saying which it is.
+        if dstack_app_id:
+            report["dstack_app_id"] = dstack_app_id
+            report["dstack_app_id_verified"] = (
+                report.get("cpu_type") == "TDX"
+                and workload_result.status == "authentic_match"
+            )
         report["workload"] = {
             "status": workload_result.status,
             "template_name": workload_result.template_name,

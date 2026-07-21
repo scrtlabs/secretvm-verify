@@ -419,10 +419,18 @@ export async function checkSecretVmWithRuntime(
     } catch {
       /* no /info endpoint — old schema */
     }
-    if (dstackAppId) report.dstack_app_id = dstackAppId;
-
     const workloadResult = await runtime.verifyWorkload(cpuData, dockerCompose, dockerFilesInput, dstackAppId);
     checks.workload_binding_verified = workloadResult.status === "authentic_match";
+    // The app-id is only *proven* when it was an input to a TDX RTMR3 replay
+    // that reproduced the quote. SEV-SNP has no app-id in its launch
+    // measurement, and a failed TDX replay proves nothing either — in both
+    // cases the value is whatever the VM chose to serve on /info. Report it
+    // (it is useful for diagnosis) but never without saying which it is.
+    if (dstackAppId) {
+      report.dstack_app_id = dstackAppId;
+      report.dstack_app_id_verified =
+        report.cpu_type === "TDX" && workloadResult.status === "authentic_match";
+    }
     report.workload = workloadResult;
     report.docker_compose = dockerCompose;
     if (workloadResult.status === "authentic_mismatch") {

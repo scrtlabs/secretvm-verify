@@ -937,3 +937,86 @@ describe("bare-host default-port fallback (29343 → 21434)", () => {
     assert.match(result.report.tls_binding_url, /:29343$/);
   });
 });
+
+describe("dstack_app_id provenance", () => {
+  const APP_ID = "e418296d0e99734599a4138774e6b85e058a64fe";
+
+  // Runtime serving /info with an app-id, with the CPU type and the workload
+  // verdict dictated by the test. `appId` of "" simulates a pre-dstack image
+  // whose /info is absent.
+  function runtimeWith(attestationType: string, workloadStatus: string, appId = APP_ID) {
+    return {
+      fetch: async (input: any) => {
+        const u = String(input);
+        if (!u.includes(":29343/")) throw new Error("ECONNREFUSED");
+        if (u.endsWith("/info")) {
+          if (!appId) throw new Error("HTTP 404");
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ dstack_app_id: appId }),
+          } as any;
+        }
+        return { ok: true, status: 200, text: async () => "00" } as any;
+      },
+      getTlsCertBinding: async () => ({
+        spki: Buffer.alloc(32),
+        certificate: Buffer.alloc(32),
+      }),
+      checkCpuAttestation: async () => ({
+        valid: true,
+        report: {},
+        attestationType,
+        errors: [],
+      }),
+      checkNvidiaGpuAttestation: async () => ({ valid: false }),
+      verifyWorkload: async () => ({ status: workloadStatus }),
+    } as any;
+  }
+
+  it("marks the app-id verified on a TDX authentic_match", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match"),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, true);
+  });
+
+  it("marks the app-id UNverified on SEV-SNP even when the workload matches", async () => {
+    // SEV-SNP has no app-id in its launch measurement, so a matching workload
+    // says nothing about the value /info served.
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("SEV-SNP", "authentic_match"),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
+  });
+
+  it("marks the app-id UNverified when the TDX workload does not match", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_mismatch"),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
+  });
+
+  it("omits both fields when the VM serves no app-id", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match", ""),
+    );
+    assert.equal("dstack_app_id" in r.report, false);
+    assert.equal("dstack_app_id_verified" in r.report, false);
+  });
+});

@@ -606,6 +606,76 @@ class TestSecretVm:
 
 
 # ---------------------------------------------------------------------------
+# dstack_app_id provenance in the SecretVM report
+# ---------------------------------------------------------------------------
+
+class TestDstackAppIdProvenance:
+    """The app-id served by /info is only *proven* when it was an input to a
+    TDX RTMR3 replay that reproduced the quote. On SEV-SNP (no app-id in the
+    launch measurement) and on a failed TDX replay it is unverified, and the
+    report must say so.
+    """
+
+    APP_ID = "e418296d0e99734599a4138774e6b85e058a64fe"
+
+    def _run(self, cpu_type, workload_status, serve_info=True):
+        from secretvm.verify import WorkloadResult
+
+        tls_fp, _, _, _, no_gpu_json, _, _ = _make_test_data()
+        cpu_result = AttestationResult(
+            valid=True, attestation_type=cpu_type,
+            checks={"quote_parsed": True, "quote_verified": True},
+            report={"report_data": "aa" * 32 + "bb" * 32, "mr_td": "cc" * 48},
+        )
+        workload = WorkloadResult(
+            status=workload_status, template_name="small",
+            artifacts_ver="v0.0.34", env="prod",
+        )
+        # Request order in check_secret_vm: /cpu, /gpu, /docker-compose, /info.
+        responses = [
+            _mock_response("fake_cpu_quote"),
+            _mock_response(no_gpu_json, content_type="application/json"),
+            _mock_response("version: '3'\nservices: {}"),
+        ]
+        if serve_info:
+            responses.append(_mock_response(
+                json.dumps({"dstack_app_id": self.APP_ID}),
+                content_type="application/json",
+            ))
+        else:
+            responses.append(Exception("no /info endpoint"))
+
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
+             patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload), \
+             patch(f"{_M}.requests") as mock_req:
+            mock_req.get.side_effect = responses
+            return check_secret_vm("https://test-vm:29343")
+
+    def test_tdx_authentic_match_marks_app_id_verified(self):
+        result = self._run("TDX", "authentic_match")
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is True
+
+    def test_sev_never_verifies_the_app_id(self):
+        # SEV-SNP has no app-id in its launch measurement, so a matching
+        # workload says nothing about the value /info served.
+        result = self._run("SEV-SNP", "authentic_match")
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
+
+    def test_tdx_mismatch_does_not_verify_the_app_id(self):
+        result = self._run("TDX", "authentic_mismatch")
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
+
+    def test_no_info_endpoint_omits_both_fields(self):
+        result = self._run("TDX", "authentic_match", serve_info=False)
+        assert "dstack_app_id" not in result.report
+        assert "dstack_app_id_verified" not in result.report
+
+
+# ---------------------------------------------------------------------------
 # RTMR3 calculation (with and without docker-files)
 # ---------------------------------------------------------------------------
 
