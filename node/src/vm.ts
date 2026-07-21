@@ -419,21 +419,31 @@ export async function checkSecretVmWithRuntime(
     } catch {
       /* no /info endpoint — old schema */
     }
-    const workloadResult = await runtime.verifyWorkload(cpuData, dockerCompose, dockerFilesInput, dstackAppId);
-    checks.workload_binding_verified = workloadResult.status === "authentic_match";
-    // The app-id is only *proven* when it was an input to a TDX RTMR3 replay
-    // that reproduced a hardware-signed quote. SEV-SNP has no app-id in its
-    // launch measurement, and a failed TDX replay proves nothing either — in
-    // both cases the value is whatever the VM chose to serve on /info. The
-    // cpuResult.valid conjunct matters because verification does not stop at a
-    // failed CPU quote: verifyTdxWorkload replays measurements without checking
-    // the DCAP signature, so an unsigned quote carrying copied measurements can
-    // still reach authentic_match. Report the value either way (it is useful
-    // for diagnosis) but never without saying which case it is.
+    // Record the served value immediately so it survives for diagnosis even if
+    // the workload step throws, and default its provenance to false: the flag
+    // is only ever raised below, on a replay that actually proves it.
     if (dstackAppId) {
       report.dstack_app_id = dstackAppId;
+      report.dstack_app_id_verified = false;
+    }
+    const workloadResult = await runtime.verifyWorkload(cpuData, dockerCompose, dockerFilesInput, dstackAppId);
+    checks.workload_binding_verified = workloadResult.status === "authentic_match";
+    // Raise the provenance flag only when the app-id is genuinely proven for
+    // *this* endpoint. Each conjunct closes a distinct hole:
+    //   cpu_quote_verified   — verifyTdxWorkload replays measurements without
+    //                          checking the DCAP signature, so authentic_match
+    //                          alone does not imply a hardware-signed quote.
+    //   tls_binding_verified — /cpu, /docker-compose and /info are public, so a
+    //                          host can proxy another VM's quote and compose and
+    //                          reach authentic_match. Only the report_data↔TLS
+    //                          key binding ties the quote to this endpoint.
+    //   cpu_type === "TDX"   — SEV-SNP carries no app-id in its launch
+    //                          measurement, so a match proves nothing about it.
+    //   authentic_match      — the replay is what consumes the app-id at all.
+    if (dstackAppId) {
       report.dstack_app_id_verified =
         cpuResult.valid &&
+        checks.tls_binding_verified === true &&
         report.cpu_type === "TDX" &&
         workloadResult.status === "authentic_match";
     }

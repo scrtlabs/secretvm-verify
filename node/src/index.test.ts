@@ -944,11 +944,17 @@ describe("dstack_app_id provenance", () => {
   // Runtime serving /info with an app-id, with the CPU type and the workload
   // verdict dictated by the test. `appId` of "" simulates a pre-dstack image
   // whose /info is absent.
+  // getTlsCertBinding below returns 32 zero bytes for both digests, so a
+  // report_data whose first half is "00"*32 satisfies the SPKI binding.
+  const BOUND_REPORT_DATA = "00".repeat(32) + "11".repeat(32);
+  const UNBOUND_REPORT_DATA = "99".repeat(32) + "11".repeat(32);
+
   function runtimeWith(
     attestationType: string,
     workloadStatus: string,
     appId = APP_ID,
     cpuValid = true,
+    tlsBound = true,
   ) {
     return {
       fetch: async (input: any) => {
@@ -970,7 +976,9 @@ describe("dstack_app_id provenance", () => {
       }),
       checkCpuAttestation: async () => ({
         valid: cpuValid,
-        report: {},
+        report: {
+          report_data: tlsBound ? BOUND_REPORT_DATA : UNBOUND_REPORT_DATA,
+        },
         attestationType,
         errors: cpuValid ? [] : ["quote signature verification failed"],
       }),
@@ -979,7 +987,7 @@ describe("dstack_app_id provenance", () => {
     } as any;
   }
 
-  it("marks the app-id verified on a TDX authentic_match", async () => {
+  it("marks the app-id verified on a fully-passing TDX verification", async () => {
     const { checkSecretVmWithRuntime } = await import("./vm.js");
     const r = await checkSecretVmWithRuntime(
       "host.example",
@@ -988,6 +996,24 @@ describe("dstack_app_id provenance", () => {
     );
     assert.equal(r.report.dstack_app_id, APP_ID);
     assert.equal(r.report.dstack_app_id_verified, true);
+    // The only case that raises the flag is one where verification passed
+    // outright — if this ever goes false, the flag is being raised too eagerly.
+    assert.equal(r.valid, true);
+  });
+
+  it("marks the app-id UNverified when the quote is not bound to this endpoint", async () => {
+    // /cpu, /docker-compose and /info are public, so a host can relay another
+    // VM's genuine quote and compose and still reach authentic_match. Only the
+    // report_data↔TLS key binding ties the quote to the endpoint being checked.
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match", APP_ID, true, false),
+    );
+    assert.equal(r.checks.tls_binding_verified, false);
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
   });
 
   it("marks the app-id UNverified on SEV-SNP even when the workload matches", async () => {

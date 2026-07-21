@@ -618,14 +618,18 @@ class TestDstackAppIdProvenance:
 
     APP_ID = "e418296d0e99734599a4138774e6b85e058a64fe"
 
-    def _run(self, cpu_type, workload_status, serve_info=True, cpu_valid=True):
+    def _run(self, cpu_type, workload_status, serve_info=True, cpu_valid=True,
+             tls_bound=True):
         from secretvm.verify import WorkloadResult
 
         tls_fp, _, _, _, no_gpu_json, _, _ = _make_test_data()
+        # _get_tls_cert_digests is patched to return tls_fp ("aa" * 32), so a
+        # report_data whose first half is "aa" * 32 satisfies the binding.
+        report_data = ("aa" if tls_bound else "99") * 32 + "bb" * 32
         cpu_result = AttestationResult(
             valid=cpu_valid, attestation_type=cpu_type,
             checks={"quote_parsed": True, "quote_verified": cpu_valid},
-            report={"report_data": "aa" * 32 + "bb" * 32, "mr_td": "cc" * 48},
+            report={"report_data": report_data, "mr_td": "cc" * 48},
             errors=[] if cpu_valid else ["quote signature verification failed"],
         )
         workload = WorkloadResult(
@@ -657,6 +661,19 @@ class TestDstackAppIdProvenance:
         result = self._run("TDX", "authentic_match")
         assert result.report["dstack_app_id"] == self.APP_ID
         assert result.report["dstack_app_id_verified"] is True
+        # The only case that raises the flag is one where verification passed
+        # outright -- if this ever goes False, the flag is raised too eagerly.
+        assert result.valid is True
+
+    def test_unbound_quote_does_not_verify_the_app_id(self):
+        # /cpu, /docker-compose and /info are public, so a host can relay
+        # another VM's genuine quote and compose and still reach
+        # authentic_match. Only the report_data<->TLS key binding ties the
+        # quote to the endpoint being checked.
+        result = self._run("TDX", "authentic_match", tls_bound=False)
+        assert result.checks["tls_binding_verified"] is False
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
 
     def test_sev_never_verifies_the_app_id(self):
         # SEV-SNP has no app-id in its launch measurement, so a matching

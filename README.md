@@ -262,6 +262,17 @@ For a bare host with no explicit port, the client probes `GET /cpu` on `29343` f
 | `workload_binding_verified` | Workload (docker-compose hash) matches the attested one |
 | `proof_of_cloud_verified` | A trust-server peer confirms the machine is on the Proof of Cloud whitelist |
 
+**Is the dstack app-id attested?** Only on TDX, and only when the whole verification passes. The app-id is read from the VM's own `/info`, so it is not trustworthy on its face. On TDX it becomes trustworthy once the quote verifies, the quote is bound to this endpoint's TLS key, and the workload check returns `authentic_match`: it was then an input to the RTMR3 replay that reproduced a hardware-signed measurement, so no other value could have produced that quote.
+
+On **SEV-SNP it is never attested.** SEV-SNP's launch measurement covers the kernel cmdline (`docker_compose_hash=…`, `rootfs_hash=…`) and carries no app-id at all, so a `valid: true` SEV result tells you nothing about the app-id the VM reported. dstack KMS *is* supported on AMD, but there it governs key release — the KMS recomputes the launch measurement before handing over keys — rather than being measured into the quote.
+
+On VMs that expose an app-id the report therefore carries both of:
+
+- `report.dstack_app_id` — the app-id the VM served on `GET /info`, normalized to lowercase hex with any `0x` prefix stripped. Compare case-insensitively against a registry or config value rather than byte-for-byte.
+- `report.dstack_app_id_verified` — whether that value is actually attested. `true` only when `cpu_quote_verified`, `tls_binding_verified` and `workload_binding_verified` all passed on a TDX quote. `false` on SEV-SNP, on a failed or mismatched replay, on a quote whose signature did not verify, and on a quote not bound to this endpoint. The last two matter because the workload replay compares measurements without checking the DCAP signature or the TLS binding — so `authentic_match` alone implies neither a hardware-signed quote nor one belonging to the host you are talking to.
+
+This pair lives in `report`, not `checks`: it is provenance metadata and deliberately does not affect `valid`. Treat `dstack_app_id` as unverified input from the VM unless `dstack_app_id_verified` is `true`.
+
 ---
 
 #### `check_cpu_attestation(data, product="")` / `checkCpuAttestation(data, product?)`
@@ -333,19 +344,6 @@ There are two RTMR3 measurement schemes; the verifier picks between them by whet
 - **dstack-util** (newer dstack/gramine images, app-id present): each event extends RTMR3 with a **dstack event digest** `sha384(LE32(0x08000001) ‖ ":" ‖ name ‖ ":" ‖ payload)`, for events `app-id`, `compose-hash`, `os-image-hash`, and `docker-files-hash` (when present).
 
 When `/info` is absent or the id is empty (older images), the attest-tool scheme applies. Pass `dstack_app_id` explicitly (or `--dstack-app-id <hex>` on the CLI) for offline verification of a dstack VM.
-
-#### Is the app-id itself attested?
-
-Only on TDX, and only when both the quote and the workload check pass. The app-id is read from the VM's own `/info`, so it is not trustworthy on its face. On TDX it becomes trustworthy once the quote verifies and the workload check passes: it was an input to the RTMR3 replay that reproduced a hardware-signed measurement, so no other value could have produced that quote.
-
-On **SEV-SNP it is never attested.** SEV-SNP's launch measurement covers the kernel cmdline (`docker_compose_hash=…`, `rootfs_hash=…`) and carries no app-id at all, so a `valid: true` SEV result tells you nothing about the app-id the VM reported. dstack KMS *is* supported on AMD, but there it governs key release — the KMS recomputes the launch measurement before handing over keys — rather than being measured into the quote.
-
-`check_secret_vm` / `checkSecretVm` therefore report both fields together:
-
-- `report.dstack_app_id` — the value the VM served on `/info`.
-- `report.dstack_app_id_verified` — `true` only for a TDX quote that itself verified *and* whose workload check returned `authentic_match`; `false` on SEV-SNP, on a failed or mismatched TDX replay, and on a TDX quote whose signature did not verify. That last case matters because the workload replay compares measurements without checking the DCAP signature, so `authentic_match` alone does not imply the quote was hardware-signed.
-
-Treat `dstack_app_id` as unverified input unless `dstack_app_id_verified` is `true`.
 
 **Parameters:**
 - `data` — Hex-encoded TDX quote
