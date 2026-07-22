@@ -381,13 +381,38 @@ def check_secret_vm(
             dstack_app_id = _extract_dstack_app_id(info_resp.text)
         except Exception:
             pass  # no /info endpoint -- old schema
+        # Record the served value immediately so it survives for diagnosis even
+        # if the workload step raises, and default its provenance to False: the
+        # flag is only ever raised below, on a replay that actually proves it.
         if dstack_app_id:
             report["dstack_app_id"] = dstack_app_id
+            report["dstack_app_id_verified"] = False
 
         workload_result = pkg.verify_workload(
             cpu_data, docker_compose, docker_files, docker_files_sha256, dstack_app_id,
         )
         checks["workload_binding_verified"] = workload_result.status == "authentic_match"
+        # Raise the provenance flag only when the app-id is genuinely proven for
+        # *this* endpoint. Each conjunct closes a distinct hole:
+        #   cpu_quote_verified   -- verify_tdx_workload replays measurements
+        #                           without checking the DCAP signature, so
+        #                           authentic_match alone does not imply a
+        #                           hardware-signed quote.
+        #   tls_binding_verified -- /cpu, /docker-compose and /info are public,
+        #                           so a host can proxy another VM's quote and
+        #                           compose and reach authentic_match. Only the
+        #                           report_data<->TLS key binding ties the quote
+        #                           to this endpoint.
+        #   cpu_type == "TDX"    -- SEV-SNP carries no app-id in its launch
+        #                           measurement, so a match proves nothing.
+        #   authentic_match      -- the replay is what consumes the app-id.
+        if dstack_app_id:
+            report["dstack_app_id_verified"] = (
+                cpu_result.valid
+                and checks.get("tls_binding_verified") is True
+                and report.get("cpu_type") == "TDX"
+                and workload_result.status == "authentic_match"
+            )
         report["workload"] = {
             "status": workload_result.status,
             "template_name": workload_result.template_name,

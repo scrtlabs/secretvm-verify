@@ -606,6 +606,104 @@ class TestSecretVm:
 
 
 # ---------------------------------------------------------------------------
+# dstack_app_id provenance in the SecretVM report
+# ---------------------------------------------------------------------------
+
+class TestDstackAppIdProvenance:
+    """The app-id served by /info is only *proven* when it was an input to a
+    TDX RTMR3 replay that reproduced the quote. On SEV-SNP (no app-id in the
+    launch measurement) and on a failed TDX replay it is unverified, and the
+    report must say so.
+    """
+
+    APP_ID = "e418296d0e99734599a4138774e6b85e058a64fe"
+
+    def _run(self, cpu_type, workload_status, serve_info=True, cpu_valid=True,
+             tls_bound=True):
+        from secretvm.verify import WorkloadResult
+
+        tls_fp, _, _, _, no_gpu_json, _, _ = _make_test_data()
+        # _get_tls_cert_digests is patched to return tls_fp ("aa" * 32), so a
+        # report_data whose first half is "aa" * 32 satisfies the binding.
+        report_data = ("aa" if tls_bound else "99") * 32 + "bb" * 32
+        cpu_result = AttestationResult(
+            valid=cpu_valid, attestation_type=cpu_type,
+            checks={"quote_parsed": True, "quote_verified": cpu_valid},
+            report={"report_data": report_data, "mr_td": "cc" * 48},
+            errors=[] if cpu_valid else ["quote signature verification failed"],
+        )
+        workload = WorkloadResult(
+            status=workload_status, template_name="small",
+            artifacts_ver="v0.0.34", env="prod",
+        )
+        # Request order in check_secret_vm: /cpu, /gpu, /docker-compose, /info.
+        responses = [
+            _mock_response("fake_cpu_quote"),
+            _mock_response(no_gpu_json, content_type="application/json"),
+            _mock_response("version: '3'\nservices: {}"),
+        ]
+        if serve_info:
+            responses.append(_mock_response(
+                json.dumps({"dstack_app_id": self.APP_ID}),
+                content_type="application/json",
+            ))
+        else:
+            responses.append(Exception("no /info endpoint"))
+
+        with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
+             patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
+             patch(f"{_M}.verify_workload", return_value=workload), \
+             patch(f"{_M}.requests") as mock_req:
+            mock_req.get.side_effect = responses
+            return check_secret_vm("https://test-vm:29343")
+
+    def test_tdx_authentic_match_marks_app_id_verified(self):
+        result = self._run("TDX", "authentic_match")
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is True
+        # The only case that raises the flag is one where verification passed
+        # outright -- if this ever goes False, the flag is raised too eagerly.
+        assert result.valid is True
+
+    def test_unbound_quote_does_not_verify_the_app_id(self):
+        # /cpu, /docker-compose and /info are public, so a host can relay
+        # another VM's genuine quote and compose and still reach
+        # authentic_match. Only the report_data<->TLS key binding ties the
+        # quote to the endpoint being checked.
+        result = self._run("TDX", "authentic_match", tls_bound=False)
+        assert result.checks["tls_binding_verified"] is False
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
+
+    def test_sev_never_verifies_the_app_id(self):
+        # SEV-SNP has no app-id in its launch measurement, so a matching
+        # workload says nothing about the value /info served.
+        result = self._run("SEV-SNP", "authentic_match")
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
+
+    def test_tdx_mismatch_does_not_verify_the_app_id(self):
+        result = self._run("TDX", "authentic_mismatch")
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
+
+    def test_failed_cpu_quote_does_not_verify_the_app_id(self):
+        # Verification does not stop at a failed CPU quote, and
+        # verify_tdx_workload replays measurements without checking the DCAP
+        # signature -- so a forged quote carrying copied measurements can reach
+        # authentic_match. The app-id is only proven by a replay of a
+        # *hardware-signed* quote.
+        result = self._run("TDX", "authentic_match", cpu_valid=False)
+        assert result.report["dstack_app_id"] == self.APP_ID
+        assert result.report["dstack_app_id_verified"] is False
+
+    def test_no_info_endpoint_omits_both_fields(self):
+        result = self._run("TDX", "authentic_match", serve_info=False)
+        assert "dstack_app_id" not in result.report
+        assert "dstack_app_id_verified" not in result.report
+
+
+# ---------------------------------------------------------------------------
 # RTMR3 calculation (with and without docker-files)
 # ---------------------------------------------------------------------------
 

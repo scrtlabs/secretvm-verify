@@ -419,10 +419,34 @@ export async function checkSecretVmWithRuntime(
     } catch {
       /* no /info endpoint — old schema */
     }
-    if (dstackAppId) report.dstack_app_id = dstackAppId;
-
+    // Record the served value immediately so it survives for diagnosis even if
+    // the workload step throws, and default its provenance to false: the flag
+    // is only ever raised below, on a replay that actually proves it.
+    if (dstackAppId) {
+      report.dstack_app_id = dstackAppId;
+      report.dstack_app_id_verified = false;
+    }
     const workloadResult = await runtime.verifyWorkload(cpuData, dockerCompose, dockerFilesInput, dstackAppId);
     checks.workload_binding_verified = workloadResult.status === "authentic_match";
+    // Raise the provenance flag only when the app-id is genuinely proven for
+    // *this* endpoint. Each conjunct closes a distinct hole:
+    //   cpu_quote_verified   — verifyTdxWorkload replays measurements without
+    //                          checking the DCAP signature, so authentic_match
+    //                          alone does not imply a hardware-signed quote.
+    //   tls_binding_verified — /cpu, /docker-compose and /info are public, so a
+    //                          host can proxy another VM's quote and compose and
+    //                          reach authentic_match. Only the report_data↔TLS
+    //                          key binding ties the quote to this endpoint.
+    //   cpu_type === "TDX"   — SEV-SNP carries no app-id in its launch
+    //                          measurement, so a match proves nothing about it.
+    //   authentic_match      — the replay is what consumes the app-id at all.
+    if (dstackAppId) {
+      report.dstack_app_id_verified =
+        cpuResult.valid &&
+        checks.tls_binding_verified === true &&
+        report.cpu_type === "TDX" &&
+        workloadResult.status === "authentic_match";
+    }
     report.workload = workloadResult;
     report.docker_compose = dockerCompose;
     if (workloadResult.status === "authentic_mismatch") {

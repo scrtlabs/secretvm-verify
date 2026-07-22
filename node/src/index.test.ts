@@ -937,3 +937,132 @@ describe("bare-host default-port fallback (29343 → 21434)", () => {
     assert.match(result.report.tls_binding_url, /:29343$/);
   });
 });
+
+describe("dstack_app_id provenance", () => {
+  const APP_ID = "e418296d0e99734599a4138774e6b85e058a64fe";
+
+  // Runtime serving /info with an app-id, with the CPU type and the workload
+  // verdict dictated by the test. `appId` of "" simulates a pre-dstack image
+  // whose /info is absent.
+  // getTlsCertBinding below returns 32 zero bytes for both digests, so a
+  // report_data whose first half is "00"*32 satisfies the SPKI binding.
+  const BOUND_REPORT_DATA = "00".repeat(32) + "11".repeat(32);
+  const UNBOUND_REPORT_DATA = "99".repeat(32) + "11".repeat(32);
+
+  function runtimeWith(
+    attestationType: string,
+    workloadStatus: string,
+    appId = APP_ID,
+    cpuValid = true,
+    tlsBound = true,
+  ) {
+    return {
+      fetch: async (input: any) => {
+        const u = String(input);
+        if (!u.includes(":29343/")) throw new Error("ECONNREFUSED");
+        if (u.endsWith("/info")) {
+          if (!appId) throw new Error("HTTP 404");
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({ dstack_app_id: appId }),
+          } as any;
+        }
+        return { ok: true, status: 200, text: async () => "00" } as any;
+      },
+      getTlsCertBinding: async () => ({
+        spki: Buffer.alloc(32),
+        certificate: Buffer.alloc(32),
+      }),
+      checkCpuAttestation: async () => ({
+        valid: cpuValid,
+        report: {
+          report_data: tlsBound ? BOUND_REPORT_DATA : UNBOUND_REPORT_DATA,
+        },
+        attestationType,
+        errors: cpuValid ? [] : ["quote signature verification failed"],
+      }),
+      checkNvidiaGpuAttestation: async () => ({ valid: false }),
+      verifyWorkload: async () => ({ status: workloadStatus }),
+    } as any;
+  }
+
+  it("marks the app-id verified on a fully-passing TDX verification", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match"),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, true);
+    // The only case that raises the flag is one where verification passed
+    // outright — if this ever goes false, the flag is being raised too eagerly.
+    assert.equal(r.valid, true);
+  });
+
+  it("marks the app-id UNverified when the quote is not bound to this endpoint", async () => {
+    // /cpu, /docker-compose and /info are public, so a host can relay another
+    // VM's genuine quote and compose and still reach authentic_match. Only the
+    // report_data↔TLS key binding ties the quote to the endpoint being checked.
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match", APP_ID, true, false),
+    );
+    assert.equal(r.checks.tls_binding_verified, false);
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
+  });
+
+  it("marks the app-id UNverified on SEV-SNP even when the workload matches", async () => {
+    // SEV-SNP has no app-id in its launch measurement, so a matching workload
+    // says nothing about the value /info served.
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("SEV-SNP", "authentic_match"),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
+  });
+
+  it("marks the app-id UNverified when the TDX workload does not match", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_mismatch"),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
+  });
+
+  it("marks the app-id UNverified when the CPU quote itself failed", async () => {
+    // Verification does not stop at a failed CPU quote, and verifyTdxWorkload
+    // replays measurements without checking the DCAP signature — so a forged
+    // quote carrying copied measurements can reach authentic_match. The app-id
+    // is only proven by a replay of a *hardware-signed* quote.
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match", APP_ID, false),
+    );
+    assert.equal(r.report.dstack_app_id, APP_ID);
+    assert.equal(r.report.dstack_app_id_verified, false);
+  });
+
+  it("omits both fields when the VM serves no app-id", async () => {
+    const { checkSecretVmWithRuntime } = await import("./vm.js");
+    const r = await checkSecretVmWithRuntime(
+      "host.example",
+      {},
+      runtimeWith("TDX", "authentic_match", ""),
+    );
+    assert.equal("dstack_app_id" in r.report, false);
+    assert.equal("dstack_app_id_verified" in r.report, false);
+  });
+});

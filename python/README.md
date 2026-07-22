@@ -153,6 +153,13 @@ End-to-end Secret VM verification. Connects to `<url>:29343`, fetches CPU and GP
 
 The returned `result.report["docker_compose"]` contains the raw docker-compose the VM served.
 
+On VMs that expose a dstack app-id, the report also carries:
+
+- `report["dstack_app_id"]` — the app-id the VM served on `GET /info`, normalized to lowercase hex with any `0x` prefix stripped. Compare case-insensitively rather than byte-for-byte.
+- `report["dstack_app_id_verified"]` — whether that value is actually attested. **`True` only when `cpu_quote_verified`, `tls_binding_verified` and `workload_binding_verified` all passed on a TDX quote**, where the app-id was an input to the RTMR3 replay that reproduced it. `False` on SEV-SNP (whose launch measurement contains no app-id — on AMD, dstack KMS gates key release rather than being measured into the quote), on a failed or mismatched replay, on an unsigned quote, and on a quote not bound to this endpoint's TLS key. Those last two matter because the workload replay compares measurements without checking the DCAP signature or the TLS binding.
+
+This pair lives in `report`, not `checks`: it is provenance metadata and deliberately does not affect `valid`. Treat `dstack_app_id` as unverified input from the VM unless `dstack_app_id_verified` is `True`.
+
 #### `check_cpu_attestation(data, product="")`
 
 Auto-detects Intel TDX vs AMD SEV-SNP and delegates to the appropriate function.

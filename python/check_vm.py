@@ -215,6 +215,20 @@ def main():
     for name, passed in result.checks.items():
         print(_format_check_line(name, passed))
 
+    # dstack app-id. Printed outside the check list because it is provenance
+    # metadata, not a pass/fail check -- but it has to be visible somewhere in
+    # the default output, or a user cannot tell an attested app-id from one the
+    # VM simply claimed (which is always the case on SEV-SNP).
+    app_id = result.report.get("dstack_app_id")
+    if isinstance(app_id, str):
+        attested = result.report.get("dstack_app_id_verified") is True
+        print(f"\ndstack app-id: {app_id}")
+        print(
+            "  ✅ attested -- measured into this VM's RTMR3 and confirmed by the quote"
+            if attested
+            else "  ⚠️  NOT attested -- reported by the VM but not proven by the attestation"
+        )
+
     if verbose:
         report = result.report
         cpu_quote = report.get("cpu")

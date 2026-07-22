@@ -4,6 +4,12 @@ All notable changes to `secretvm-verify` (both the Node and Python packages) are
 
 ## [Unreleased]
 
+### Fixed
+
+- **`report.dstack_app_id` is no longer reported as if it were attested.** The app-id is read from the VM's own `/info`, and it only becomes trustworthy when it is an input to a TDX RTMR3 replay that reproduces the quote. SEV-SNP has no app-id in its launch measurement (dstack KMS on AMD governs key release, not the measurement), so a `valid: true` SEV result proved nothing about it; the same held for any failed or mismatched TDX replay. Both SDKs now emit `report.dstack_app_id_verified` alongside the value — `true` only when `cpu_quote_verified`, `tls_binding_verified` and `workload_binding_verified` all passed on a TDX quote; `false` otherwise. The last two conjuncts matter because the workload replay compares measurements without checking the DCAP signature or the TLS binding: verification does not stop at a failed CPU quote, and `/cpu`, `/docker-compose` and `/info` are public, so a host relaying another VM's genuine quote and compose can reach `authentic_match` on both counts. Both CLIs now print the app-id with its attested/not-attested status in the default output.
+
+## [0.13.0] — 2026-07-21
+
 ### Added
 
 - **dstack RTMR3 measurement scheme.** Newer SecretVM images (dstack/gramine KMS) extend RTMR3 via `dstack-util` instead of `attest-tool`, which changes how each event is measured. The verifier now supports both schemes and picks between them by whether the VM reports a `dstack_app_id`:

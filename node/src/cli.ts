@@ -627,6 +627,21 @@ try {
     console.log(formatCheckLine(name, passed));
   }
 
+  // dstack app-id. Printed outside the check list because it is provenance
+  // metadata, not a pass/fail check — but it has to be visible somewhere in the
+  // default output, or a user cannot tell an attested app-id from one the VM
+  // simply claimed (which is always the case on SEV-SNP).
+  if (typeof report.dstack_app_id === "string") {
+    const attested = report.dstack_app_id_verified === true;
+    console.log(
+      `\ndstack app-id: ${report.dstack_app_id}` +
+        `\n  ${attested ? "✅ attested" : "⚠️  NOT attested"} — ` +
+        (attested
+          ? "measured into this VM's RTMR3 and confirmed by the quote"
+          : "reported by the VM but not proven by the attestation"),
+    );
+  }
+
   if (verbose) {
     // For direct --tdx/--sev calls the CPU fields live at report top-level.
     // After mergeProofOfCloud splices proof_of_cloud into report, we must
