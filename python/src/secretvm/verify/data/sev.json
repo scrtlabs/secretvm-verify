@@ -725,5 +725,87 @@
             {"gpa": 8458240, "size": 61440, "section_type": 1},
             {"gpa": 8454144, "size": 4096, "section_type": 16}
         ]
+    },
+    {
+        "vm_type": "prod",
+        "rootfs_hash": "893fc9fde55aa21e6b0fad3c60031517f98165c6993b74a94e68eba1fba02950",
+        "artifacts_ver": "v0.0.35",
+        "kernel_hash": "76f6ed31d9e48a919f001cbb269de9b05a40ef6ba93ceff6253770f665188a6e",
+        "initrd_hash": "2e637cd1667795c0d7d99cc8a90f79a55802b3b722a36fd2716a9d01b2c17a71",
+        "vcpu_type": "EPYC",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
+    },
+    {
+        "vm_type": "dev",
+        "rootfs_hash": "c2d8f03d8d3bd02e03a0089d6e7143ac9de7dca41a33cf649733ea0b9f40f5ed",
+        "artifacts_ver": "v0.0.35",
+        "kernel_hash": "76f6ed31d9e48a919f001cbb269de9b05a40ef6ba93ceff6253770f665188a6e",
+        "initrd_hash": "2e637cd1667795c0d7d99cc8a90f79a55802b3b722a36fd2716a9d01b2c17a71",
+        "vcpu_type": "EPYC",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
+    },
+    {
+        "vm_type": "gpu_prod",
+        "cmdline_extra": "pci=realloc,nocrs",
+        "rootfs_hash": "3c5f71e43f93608f0e75b868d4d491e3ad402229225638ed80b5d62a9210d460",
+        "artifacts_ver": "v0.0.35",
+        "kernel_hash": "76f6ed31d9e48a919f001cbb269de9b05a40ef6ba93ceff6253770f665188a6e",
+        "initrd_hash": "2e637cd1667795c0d7d99cc8a90f79a55802b3b722a36fd2716a9d01b2c17a71",
+        "vcpu_type": "EPYC",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
+    },
+    {
+        "vm_type": "gpu_dev",
+        "cmdline_extra": "pci=realloc,nocrs",
+        "rootfs_hash": "c8e2df206cf7cea87ce4c23d1efa469568b790b974548a9d3c0630db8bf381fd",
+        "artifacts_ver": "v0.0.35",
+        "kernel_hash": "76f6ed31d9e48a919f001cbb269de9b05a40ef6ba93ceff6253770f665188a6e",
+        "initrd_hash": "2e637cd1667795c0d7d99cc8a90f79a55802b3b722a36fd2716a9d01b2c17a71",
+        "vcpu_type": "EPYC",
+        "ovmf_hash": "c581d3eaebf2941beb1f757de97497279b953a6999921cab05f9ed5268f9c0505d741f4021b5a3995c9893851cde190e",
+        "sev_hashes_table_gpa": 8457216,
+        "sev_es_reset_eip": 8433668,
+        "ovmf_sections": [
+            {"gpa": 8388608, "size": 36864, "section_type": 1},
+            {"gpa": 8429568, "size": 12288, "section_type": 1},
+            {"gpa": 8441856, "size": 4096, "section_type": 2},
+            {"gpa": 8445952, "size": 4096, "section_type": 3},
+            {"gpa": 8450048, "size": 4096, "section_type": 4},
+            {"gpa": 8458240, "size": 61440, "section_type": 1},
+            {"gpa": 8454144, "size": 4096, "section_type": 16}
+        ]
     }
 ]
