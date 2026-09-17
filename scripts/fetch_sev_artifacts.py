@@ -24,6 +24,8 @@ from pathlib import Path
 
 GITHUB_API = "https://api.github.com/repos/scrtlabs/secret-vm-build/releases/tags/{version}"
 VCPU_TYPE = "EPYC"
+# GPU images boot with extra kernel cmdline args; these feed the launch measurement.
+GPU_CMDLINE_EXTRA = "pci=realloc,nocrs"
 
 # Candidate paths to look for the sev-snp-measure library, relative to this script or common locations
 SEV_SNP_MEASURE_CANDIDATES = [
@@ -71,6 +73,9 @@ def fetch_release_assets(version: str, token: str | None) -> dict[str, str]:
         else:
             # no digest in API response (older GitHub API behaviour); record download URL
             asset_map[f"__url_{name}"] = asset["browser_download_url"]
+        # The API asset URL is the only one that works for private repos: the
+        # releases/download/... host 404s unless the caller is browser-authenticated.
+        asset_map[f"__apiurl_{name}"] = asset["url"]
 
     return asset_map
 
@@ -78,6 +83,7 @@ def fetch_release_assets(version: str, token: str | None) -> dict[str, str]:
 def download_file(url: str, dest: str, token: str | None) -> None:
     """Download a file from a URL to dest path."""
     req = urllib.request.Request(url)
+    req.add_header("Accept", "application/octet-stream")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
     print(f"  Downloading {url} …", flush=True)
@@ -132,7 +138,7 @@ def build_entries(version: str, asset_map: dict[str, str], ovmf_meta: dict, gpu:
         h = asset_map.get(name)
         if not h:
             sys.exit(f"Asset '{name}' not found in release '{version}'. Available assets:\n  "
-                     + "\n  ".join(k for k in asset_map if not k.startswith("__url_")))
+                     + "\n  ".join(k for k in asset_map if not k.startswith("__")))
         return h
 
     kernel_hash = _get_hash(f"bzImage-{version}-sev")
@@ -154,6 +160,14 @@ def build_entries(version: str, asset_map: dict[str, str], ovmf_meta: dict, gpu:
         "vcpu_type": VCPU_TYPE,
         **ovmf_meta,
     }
+
+    if gpu:
+        return [
+            {"vm_type": vm_type_prod, "cmdline_extra": GPU_CMDLINE_EXTRA,
+             "rootfs_hash": rootfs_prod, **base},
+            {"vm_type": vm_type_dev, "cmdline_extra": GPU_CMDLINE_EXTRA,
+             "rootfs_hash": rootfs_dev, **base},
+        ]
 
     return [
         {"vm_type": vm_type_prod, "rootfs_hash": rootfs_prod, **base},
@@ -231,7 +245,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         ovmf_tmp = os.path.join(tmpdir, ovmf_asset_name)
 
-        if ovmf_url_key in asset_map:
+        ovmf_api_key = f"__apiurl_{ovmf_asset_name}"
+        if ovmf_api_key in asset_map:
+            # Works for both public and private repos.
+            download_file(asset_map[ovmf_api_key], ovmf_tmp, token)
+        elif ovmf_url_key in asset_map:
             # Older GitHub API — no digest; must download
             download_file(asset_map[ovmf_url_key], ovmf_tmp, token)
         elif ovmf_asset_name in asset_map:
