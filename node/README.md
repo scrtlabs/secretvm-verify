@@ -129,6 +129,12 @@ console.log(result.valid);
 
 This works with all functions: `checkTdxCpuAttestation`, `checkSevCpuAttestation`, `checkNvidiaGpuAttestation`, `verifyWorkload`, `resolveSecretVmVersion`. When a URL is passed to `verifyWorkload`, both the quote and docker-compose are fetched automatically.
 
+For CLI `--vm` requests and direct SDK evidence fetches without an explicit port, the service is discovered by probing `/cpu` on HTTPS port **29343**, then **21434**, with a five-second timeout per probe. The requested GPU/CPU/compose endpoint is fetched from the selected service. An explicit port disables probing and fallback. A missing GPU on a reachable primary service remains an error rather than switching to a different service.
+
+```bash
+secretvm-verify --gpu --vm secretai-jedi.scrtlabs.com --gpu-claims-version 4.0 --raw
+```
+
 ## API reference
 
 ### `AttestationResult`

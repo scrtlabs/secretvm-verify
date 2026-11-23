@@ -18,7 +18,7 @@ import {
   extractDstackAppId,
 } from "./index.js";
 import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
-import { endpointBaseUrl, parseServiceBaseUrl } from "./url.js";
+import { endpointBaseUrl, parseServiceBaseUrl, fetchVmEndpoint } from "./url.js";
 import { orderChecks } from "./types.js";
 import type { AttestationResult } from "./types.js";
 import type { NvidiaClaimsVersion } from "./nvidia.js";
@@ -152,10 +152,7 @@ const showCompose = getFlag("--show-compose");
 const SECRET_VM_PORT = 29343;
 
 async function fetchFromVm(endpoint: string): Promise<string> {
-  const base = endpointBaseUrl(parseServiceBaseUrl(vmUrl!, SECRET_VM_PORT, "--vm URL"));
-  const resp = await fetch(`${base}/${endpoint}`);
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${base}/${endpoint}`);
-  return resp.text();
+  return fetchVmEndpoint(vmUrl!, endpoint);
 }
 
 function dockerComposeSource(url?: string): string {
@@ -221,6 +218,7 @@ Commands:
 
 Options:
   --vm <url>           Fetch quote from a VM instead of a file (works with --cpu, --tdx, --sev, --gpu, -rv, -vw)
+                       Without an explicit port, tries 29343 then 21434 (5s per probe).
   --tls-url <url>      TLS service endpoint for --secretvm binding verification.
                        Alias: --service-url
   --chain NAME         Chain name for --check-agent (e.g. base, ethereum, arbitrum)

@@ -132,6 +132,35 @@ export function endpointBaseUrl(endpoint: ParsedEndpointUrl): string {
   return `https://${formatUrlHost(endpoint.host)}:${endpoint.port}${endpoint.pathPrefix}`;
 }
 
+/** Resolve a VM service by probing /cpu on 29343, then 21434.
+ * Explicit ports are honored without probing. The path prefix and HTTPS
+ * validation apply to both candidates. If neither responds, retain 29343
+ * so the subsequent request reports the primary endpoint's error.
+ */
+export async function resolveServiceEndpointWithFallback(
+  url: string,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<ParsedEndpointUrl> {
+  const primary = parseServiceBaseUrl(url, SECRET_VM_PORT);
+  if (hasExplicitPort(url)) return primary;
+  for (const endpoint of [primary, { ...primary, port: 21434 }]) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetchImpl(`${endpointBaseUrl(endpoint)}/cpu`, {
+        signal: controller.signal,
+      });
+      await response.body?.cancel();
+      if (response.ok) return endpoint;
+    } catch {
+      // Unreachable or timed-out candidate: try the next service port.
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return primary;
+}
+
 export function tlsCertSpkiSha256(cert: crypto.X509Certificate): Buffer {
   const spki = cert.publicKey.export({ format: "der", type: "spki" });
   return crypto.createHash("sha256").update(spki).digest();
@@ -176,7 +205,7 @@ export function isVmUrl(data: string): boolean {
  * Accepts bare hostnames, host:port, or full URLs.
  */
 export async function fetchVmEndpoint(url: string, endpoint: string): Promise<string> {
-  const base = endpointBaseUrl(parseServiceBaseUrl(url, SECRET_VM_PORT));
+  const base = endpointBaseUrl(await resolveServiceEndpointWithFallback(url));
   const resp = await fetch(`${base}/${endpoint}`);
   if (!resp.ok) throw new Error(`HTTP ${resp.status} from ${base}/${endpoint}`);
   return resp.text();
