@@ -80,29 +80,46 @@ def _gpu_verify_jwt_signature(token: str, jwks: dict) -> bool:
         return False
 
 
-def check_nvidia_gpu_attestation(data_or_url: str) -> AttestationResult:
+def check_nvidia_gpu_attestation(
+    data_or_url: str, claims_version: str = "4.0",
+) -> AttestationResult:
     """Verify NVIDIA GPU attestation via the NVIDIA Remote Attestation Service.
 
     Args:
         data_or_url: JSON attestation payload, or a VM URL to fetch the GPU quote from.
+        claims_version: NVIDIA claims version (2.0, 3.0 or 4.0). Defaults to 4.0
+            to support versioned opaque data and security-version claims.
 
     Returns:
         AttestationResult with verification status and parsed attestation claims.
     """
     from .url import is_vm_url, fetch_gpu_quote
-    data = fetch_gpu_quote(data_or_url) if is_vm_url(data_or_url) else data_or_url
+    # Compact JSON can contain dots in version strings; it is not a VM hostname.
+    is_json = data_or_url.lstrip().startswith(("{", "["))
+    data = fetch_gpu_quote(data_or_url) if not is_json and is_vm_url(data_or_url) else data_or_url
     errors = []
     checks = {}
 
     # Parse input
     try:
         attestation_data = json.loads(data)
+        if not isinstance(attestation_data, dict):
+            raise ValueError("GPU attestation payload must be a JSON object")
         checks["input_parsed"] = True
     except Exception as e:
         return AttestationResult(
             valid=False, attestation_type="NVIDIA-GPU",
             checks={"input_parsed": False}, errors=[str(e)],
         )
+
+    if claims_version not in ("2.0", "3.0", "4.0"):
+        return AttestationResult(
+            valid=False, attestation_type="NVIDIA-GPU", checks=checks,
+            errors=[f"Unsupported NVIDIA claims version: {claims_version}"],
+        )
+
+    # Claims version is selected by the verifier, not by the evidence server.
+    attestation_data = {**attestation_data, "claims_version": claims_version}
 
     # Submit to NRAS
     try:
@@ -149,6 +166,9 @@ def check_nvidia_gpu_attestation(data_or_url: str) -> AttestationResult:
             errors.append("Platform JWT signature verification failed")
 
         overall_claims = _gpu_decode_jwt_payload(platform_token)
+        # Preserve NVIDIA names and nested/future claims. As with the summary,
+        # callers must check result.valid before trusting these values.
+        report["claims"] = overall_claims
         report["overall_result"] = overall_claims.get("x-nvidia-overall-att-result")
         report["subject"] = overall_claims.get("sub")
         report["issuer"] = overall_claims.get("iss")
@@ -167,6 +187,7 @@ def check_nvidia_gpu_attestation(data_or_url: str) -> AttestationResult:
 
             claims = _gpu_decode_jwt_payload(token)
             gpu_reports[gpu_id] = {
+                "claims": claims,
                 "model": claims.get("hwmodel"),
                 "oem_id": claims.get("oemid"),
                 "ueid": claims.get("ueid"),
@@ -192,7 +213,9 @@ def check_nvidia_gpu_attestation(data_or_url: str) -> AttestationResult:
     )
 
 
-async def check_nvidia_gpu_attestation_async(data_or_url: str) -> AttestationResult:
+async def check_nvidia_gpu_attestation_async(
+    data_or_url: str, claims_version: str = "4.0",
+) -> AttestationResult:
     """Async variant of :func:`check_nvidia_gpu_attestation`.
 
     Use this from inside an event loop. The NVIDIA GPU verification path uses
@@ -201,4 +224,4 @@ async def check_nvidia_gpu_attestation_async(data_or_url: str) -> AttestationRes
     this implementation simply offloads the synchronous function to a thread
     pool via :func:`asyncio.to_thread`.
     """
-    return await asyncio.to_thread(check_nvidia_gpu_attestation, data_or_url)
+    return await asyncio.to_thread(check_nvidia_gpu_attestation, data_or_url, claims_version)

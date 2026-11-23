@@ -21,6 +21,7 @@ import { resolveAgent, verifyAgent, checkAgent } from "./agent.js";
 import { endpointBaseUrl, parseServiceBaseUrl } from "./url.js";
 import { orderChecks } from "./types.js";
 import type { AttestationResult } from "./types.js";
+import type { NvidiaClaimsVersion } from "./nvidia.js";
 
 async function getCertDns(ip: string, port: number): Promise<string | undefined> {
   return new Promise((resolve) => {
@@ -142,6 +143,7 @@ const checkPoc = getFlag("--proof-of-cloud");
 // When set, require a verifiable GPU attestation for --secretvm (a CPU-only VM
 // then fails closed instead of silently passing). Off by default.
 const enforceGpu = getFlag("--enforce-gpu");
+const gpuClaimsVersion = (getFlagValue("--gpu-claims-version") ?? "4.0") as NvidiaClaimsVersion;
 // When set, prints the docker-compose.yaml after the check list so the
 // verifier can see the actual workload that was measured. Works with
 // --secretvm, --verify-workload, --check-agent, --agent.
@@ -225,6 +227,8 @@ Options:
   --product NAME       AMD product name (Genoa, Milan, Turin). Optional; auto-detected if omitted.
   --json               Output minimal JSON (valid, checks, errors) — omits the report fields
   --raw                Output full JSON result (includes the parsed report fields)
+  --gpu-claims-version <version>
+                       NVIDIA claims version for --gpu/--secretvm: 2.0, 3.0 or 4.0 (default: 4.0)
   --verbose, -v        Print all attestation report fields (text mode only)
   --reload-amd-kds     Bypass the local AMD KDS cache and re-fetch VCEK,
                        cert chain, and CRL from kdsintf.amd.com (no effect on TDX)
@@ -297,6 +301,7 @@ try {
       strict,
       tlsUrl,
       enforceGpu,
+      gpuClaimsVersion,
     });
   } else if (getFlag("--cpu")) {
     const quoteData = await getCpuQuote("--cpu");
@@ -320,7 +325,7 @@ try {
     const quoteData = await getGpuQuote("--gpu");
     const source = vmUrl ? vmUrl : getFlagValue("--gpu") ?? getPositional();
     if (!jsonOut) console.log(`Verifying NVIDIA GPU attestation from ${source} ...\n`);
-    result = await checkNvidiaGpuAttestation(quoteData);
+    result = await checkNvidiaGpuAttestation(quoteData, gpuClaimsVersion);
   } else if (getFlag("--resolve-version") || getFlag("-rv")) {
     const quoteData = await getCpuQuote("--resolve-version", "-rv");
     const quoteType = detectCpuQuoteType(quoteData);

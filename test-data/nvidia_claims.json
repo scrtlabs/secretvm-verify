@@ -1,0 +1,35 @@
+{
+  "platform": {
+    "x-nvidia-ver": "4.0",
+    "x-nvidia-overall-att-result": true,
+    "sub": "NVIDIA-PLATFORM-ATTESTATION",
+    "iss": "https://nras.attestation.nvidia.com",
+    "eat_nonce": "test-nonce"
+  },
+  "gpu": {
+    "hwmodel": "GB100",
+    "oemid": "5703",
+    "ueid": "test-device",
+    "dbgstat": "disabled",
+    "secboot": true,
+    "x-nvidia-gpu-driver-version": "test-driver",
+    "x-nvidia-gpu-vbios-version": "test-vbios",
+    "x-nvidia-gpu-attestation-report-parsed": true,
+    "x-nvidia-gpu-attestation-report-signature-verified": true,
+    "x-nvidia-gpu-attestation-report-nonce-match": true,
+    "x-nvidia-gpu-arch-check": true,
+    "measres": "success",
+    "x-nvidia-gpu-vbios-rim-signature-verified": true,
+    "x-nvidia-gpu-vbios-rim-version-match": true,
+    "x-nvidia-gpu-vbios-rim-cert-chain": {
+      "x-nvidia-cert-status": "valid",
+      "x-nvidia-cert-ocsp-status": "good",
+      "x-nvidia-cert-expiration-date": "2030-01-01T00:00:00Z"
+    },
+    "x-nvidia-gpu-driver-rim-cert-chain": null,
+    "x-nvidia-gpu-claims-version": "4.0",
+    "x-nvidia-attester-claims": {"FSP_UCODE_MIN_SVN": 5},
+    "x-nvidia-mismatch-opaque-data-records": null,
+    "future-claim": {"values": [false, 0, null, "unchanged"]}
+  }
+}

@@ -6,6 +6,8 @@ const NRAS_URL = "https://nras.attestation.nvidia.com/v4/attest/gpu";
 const NRAS_JWKS_URL =
   "https://nras.attestation.nvidia.com/.well-known/jwks.json";
 
+export type NvidiaClaimsVersion = "2.0" | "3.0" | "4.0";
+
 // ---------------------------------------------------------------------------
 // JWT helpers
 // ---------------------------------------------------------------------------
@@ -96,8 +98,11 @@ function ecdsaRsToDer(r: Buffer, s: Buffer): Buffer {
 
 export async function checkNvidiaGpuAttestation(
   dataOrUrl: string,
+  claimsVersion: NvidiaClaimsVersion = "4.0",
 ): Promise<AttestationResult> {
-  const data = isVmUrl(dataOrUrl) ? await fetchGpuQuote(dataOrUrl) : dataOrUrl;
+  // Compact JSON can contain dots in version strings; it is not a VM hostname.
+  const isJson = /^[\s]*[\[{]/.test(dataOrUrl);
+  const data = !isJson && isVmUrl(dataOrUrl) ? await fetchGpuQuote(dataOrUrl) : dataOrUrl;
   const errors: string[] = [];
   const checks: Record<string, boolean> = {};
 
@@ -105,11 +110,21 @@ export async function checkNvidiaGpuAttestation(
   let attestationData: any;
   try {
     attestationData = JSON.parse(data);
+    if (!attestationData || typeof attestationData !== "object" || Array.isArray(attestationData)) {
+      throw new Error("GPU attestation payload must be a JSON object");
+    }
     checks.input_parsed = true;
   } catch (e: any) {
     return makeResult("NVIDIA-GPU", {
       checks: { input_parsed: false },
       errors: [e.message],
+    });
+  }
+
+  if (!["2.0", "3.0", "4.0"].includes(claimsVersion)) {
+    return makeResult("NVIDIA-GPU", {
+      checks,
+      errors: [`Unsupported NVIDIA claims version: ${claimsVersion}`],
     });
   }
 
@@ -122,7 +137,8 @@ export async function checkNvidiaGpuAttestation(
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify(attestationData),
+      // Claims version is selected by the verifier, not by the evidence server.
+      body: JSON.stringify({ ...attestationData, claims_version: claimsVersion }),
     });
     if (!resp.ok) {
       const text = await resp.text();
@@ -163,6 +179,9 @@ export async function checkNvidiaGpuAttestation(
     }
 
     const claims = decodeJwtPayload(platformToken);
+    // Preserve NVIDIA names, nested values and future claims without filtering.
+    // As with the summary, callers must check result.valid before trusting them.
+    report.claims = claims;
     report.overall_result = claims["x-nvidia-overall-att-result"];
     report.subject = claims.sub;
     report.issuer = claims.iss;
@@ -184,6 +203,7 @@ export async function checkNvidiaGpuAttestation(
 
       const claims = decodeJwtPayload(token);
       gpuReports[gpuId] = {
+        claims,
         model: claims.hwmodel,
         oem_id: claims.oemid,
         ueid: claims.ueid,

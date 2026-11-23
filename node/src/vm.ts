@@ -1,6 +1,7 @@
 import { AttestationResult, makeResult, orderChecks } from "./types.js";
 import { checkCpuAttestation as checkCpuAttestationDefault } from "./cpu.js";
 import { checkNvidiaGpuAttestation as checkNvidiaGpuAttestationDefault } from "./nvidia.js";
+import type { NvidiaClaimsVersion } from "./nvidia.js";
 import { checkProofOfCloud as checkProofOfCloud_ } from "./proofOfCloud.js";
 import { verifyWorkload as verifyWorkloadDefault, extractDstackAppId, type DockerFilesInput } from "./workload.js";
 import {
@@ -46,6 +47,7 @@ export type CheckSecretVmOptions = {
   strict?: boolean;
   tlsUrl?: string;
   enforceGpu?: boolean;
+  gpuClaimsVersion?: NvidiaClaimsVersion;
 };
 
 export type SecretVmRuntime = {
@@ -366,7 +368,7 @@ export async function checkSecretVmWithRuntime(
   }
 
   if (gpuPresent) {
-    const gpuResult = await runtime.checkNvidiaGpuAttestation(gpuData);
+    const gpuResult = await runtime.checkNvidiaGpuAttestation(gpuData, options.gpuClaimsVersion);
     checks.gpu_quote_verified = gpuResult.valid;
     report.gpu = gpuResult.report;
     if (!gpuResult.valid) {

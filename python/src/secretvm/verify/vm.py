@@ -221,6 +221,7 @@ def check_secret_vm(
     docker_files_sha256: Optional[str] = None,
     strict: bool = False,
     enforce_gpu: bool = False,
+    gpu_claims_version: str = "4.0",
 ) -> AttestationResult:
     """Verify a Secret VM by fetching CPU and GPU attestation from its endpoints.
 
@@ -236,6 +237,7 @@ def check_secret_vm(
         product: AMD product name (only used for SEV-SNP). Auto-detected if empty.
         reload_amd_kds: If True, bypass the local AMD KDS cache and re-fetch
             VCEK / cert chain / CRL. No effect on TDX VMs (TDX doesn't cache).
+        gpu_claims_version: NVIDIA claims version (default 4.0).
 
     Returns:
         AttestationResult with attestation_type="SECRET-VM".
@@ -333,7 +335,7 @@ def check_secret_vm(
         checks["gpu_quote_fetched"] = False
 
     if gpu_present:
-        gpu_result = pkg.check_nvidia_gpu_attestation(gpu_data)
+        gpu_result = pkg.check_nvidia_gpu_attestation(gpu_data, gpu_claims_version)
         checks["gpu_quote_verified"] = gpu_result.valid
         report["gpu"] = gpu_result.report
         if not gpu_result.valid:
@@ -472,6 +474,7 @@ async def check_secret_vm_async(
     docker_files_sha256: Optional[str] = None,
     strict: bool = False,
     enforce_gpu: bool = False,
+    gpu_claims_version: str = "4.0",
 ) -> AttestationResult:
     """Async variant of :func:`check_secret_vm`.
 
@@ -484,5 +487,5 @@ async def check_secret_vm_async(
     """
     return await asyncio.to_thread(
         check_secret_vm, url, product, reload_amd_kds, check_proof_of_cloud,
-        docker_files, docker_files_sha256, strict, enforce_gpu,
+        docker_files, docker_files_sha256, strict, enforce_gpu, gpu_claims_version,
     )
