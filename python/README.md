@@ -172,9 +172,25 @@ Verifies an Intel TDX Quote v4.
 
 Verifies an AMD SEV-SNP attestation report.
 
-#### `check_nvidia_gpu_attestation(data)`
+#### `check_nvidia_gpu_attestation(data, claims_version="4.0")`
 
 Verifies NVIDIA GPU attestation via NRAS.
+
+Preserves all returned platform claims in `report["claims"]` and per-GPU claims in `report["gpus"]["GPU-0"]["claims"]`, using NVIDIA's original names and nested values. Existing summary fields remain available.
+
+```python
+result = check_secret_vm("my-vm.example.com", enforce_gpu=True, gpu_claims_version="4.0")
+if not result.valid:
+    raise RuntimeError(result.errors or "Verification failed")
+claims = result.report["gpu"]["gpus"]["GPU-0"]["claims"]
+print(claims.get("x-nvidia-gpu-vbios-rim-cert-chain"))
+print(claims.get("x-nvidia-attester-claims"))
+print(claims.get("x-nvidia-mismatch-opaque-data-records"))
+```
+
+Version `4.0` is the default; explicitly request `2.0` or `3.0` when needed. The verifier's selection overrides any `claims_version` in the evidence payload. Async GPU and VM verification accept the same version arguments. This package calls NRAS directly, independently of NVIDIA's deprecated Python attestation SDK.
+
+RIM checks, certificate/revocation details, and opaque-data/security-version claims are retained when returned by NRAS. An SVN such as `FSP_UCODE_MIN_SVN` is present only when the evidence and RIM support its inclusion. Missing values are not manufactured or treated as successful checks. This exposes NRAS claims, not raw GPU measurement hashes. Claims on a failed result are diagnostic: require `valid` before using them for policy, and separately check customer-approved versions. See [NVIDIA claims](https://docs.nvidia.com/attestation/advanced-documentation/latest/claims-guide/gpu_claims.html) and [opaque-data specification](https://docs.nvidia.com/attestation/specs/latest/opaque-data-format.html).
 
 #### `check_proof_of_cloud(cpu_data)` / `check_proof_of_cloud_async(cpu_data)`
 

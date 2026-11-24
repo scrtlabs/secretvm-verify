@@ -129,6 +129,12 @@ console.log(result.valid);
 
 This works with all functions: `checkTdxCpuAttestation`, `checkSevCpuAttestation`, `checkNvidiaGpuAttestation`, `verifyWorkload`, `resolveSecretVmVersion`. When a URL is passed to `verifyWorkload`, both the quote and docker-compose are fetched automatically.
 
+For CLI `--vm` requests and direct SDK evidence fetches without an explicit port, the service is discovered by probing `/cpu` on HTTPS port **29343**, then **21434**, with a five-second timeout per probe. The requested GPU/CPU/compose endpoint is fetched from the selected service. An explicit port disables probing and fallback. A missing GPU on a reachable primary service remains an error rather than switching to a different service.
+
+```bash
+secretvm-verify --gpu --vm secretai-jedi.scrtlabs.com --gpu-claims-version 4.0 --raw
+```
+
 ## API reference
 
 ### `AttestationResult`
@@ -176,9 +182,27 @@ Verifies an Intel TDX Quote v4.
 
 Verifies an AMD SEV-SNP attestation report.
 
-#### `checkNvidiaGpuAttestation(data)`
+#### `checkNvidiaGpuAttestation(data, claimsVersion = "4.0")`
 
 Verifies NVIDIA GPU attestation via NRAS.
+
+Preserves all returned platform claims under `report.claims` and per-GPU claims under `report.gpus["GPU-0"].claims`, with NVIDIA's original names, nested objects, arrays and null values. Existing summary fields such as `vbios_version` and `driver_version` remain available.
+
+```typescript
+const result = await checkSecretVm('my-vm.example.com', {
+  enforceGpu: true,
+  gpuClaimsVersion: '4.0',
+});
+if (!result.valid) throw new Error(result.errors.join('; ') || 'Verification failed');
+const claims = result.report.gpu.gpus['GPU-0'].claims;
+console.log(claims['x-nvidia-gpu-vbios-rim-cert-chain']);
+console.log(claims['x-nvidia-attester-claims']);
+console.log(claims['x-nvidia-mismatch-opaque-data-records']);
+```
+
+Claims version defaults to `4.0`; explicitly select `2.0` or `3.0` for older claim schemas. This verifier setting overrides any `claims_version` in the submitted evidence payload. The CLI accepts `--gpu-claims-version 4.0` with `--gpu` or `--secretvm`. Use `--raw` to include the full report; `--json` omits it.
+
+RIM validation, certificate/revocation details, and newer opaque-data claims are retained when NRAS returns them. Security-version values such as `FSP_UCODE_MIN_SVN` appear only when supported by the evidence and requested by the RIM. Missing claims stay absent; they are not a successful check. These are decoded NRAS results, not a dump of raw GPU measurement hashes. Diagnostic claims may also be present on a failed result: require `valid` before using claims for policy, and evaluate customer-approved versions separately. See [NVIDIA claims](https://docs.nvidia.com/attestation/advanced-documentation/latest/claims-guide/gpu_claims.html) and [opaque-data specification](https://docs.nvidia.com/attestation/specs/latest/opaque-data-format.html).
 
 #### `checkProofOfCloud(cpuData)`
 

@@ -412,6 +412,10 @@ Python dataclass / TypeScript interface returned by workload functions:
 
 #### `check_nvidia_gpu_attestation(data)` / `checkNvidiaGpuAttestation(data)`
 
+Both implementations preserve full NVIDIA platform claims in `report.claims` and full per-GPU claims in `report.gpus["GPU-0"].claims` (Python uses dictionary access). Existing short summary names remain available. End-to-end VM results nest these under `report.gpu`.
+
+NRAS claims version `4.0` is requested by default, including opaque-data/security-version claims when the evidence and reference manifests support them. Select another schema with the GPU function's second argument, Node.js VM option `gpuClaimsVersion`, Python VM argument `gpu_claims_version`, or CLI `--gpu-claims-version` for `--gpu`/`--secretvm`. Use `--raw` to print claims; `--json` omits the report. Require `valid` before relying on the claims; missing fields are not successful checks. See the [Node.js API](node/README.md) and [Python API](python/README.md).
+
 Verifies NVIDIA GPU attestation via NRAS.
 
 **Parameters:**

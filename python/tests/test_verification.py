@@ -364,12 +364,13 @@ class TestSecretVm:
         assert _parse_vm_url("https://myhost:5555") == ("myhost", 5555)
         assert _parse_vm_url("https://myhost") == ("myhost", 29343)
 
-    def test_vm_with_gpu_all_pass(self):
+    @pytest.mark.parametrize("claims_version", ["3.0", "4.0"])
+    def test_vm_with_gpu_all_pass(self, claims_version):
         tls_fp, cpu_result, gpu_result, gpu_json, _, workload_pass, poc_pass = _make_test_data()
 
         with patch(f"{_M}._get_tls_cert_digests", return_value=(tls_fp, tls_fp)), \
              patch(f"{_M}.check_cpu_attestation", return_value=cpu_result), \
-             patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result), \
+             patch(f"{_M}.check_nvidia_gpu_attestation", return_value=gpu_result) as gpu_check, \
              patch(f"{_M}.verify_workload", return_value=workload_pass), \
              patch(f"{_M}.check_proof_of_cloud", return_value=poc_pass), \
              patch(f"{_M}.requests") as mock_req:
@@ -378,8 +379,12 @@ class TestSecretVm:
                 _mock_response(gpu_json, content_type="application/json"),
                 _mock_response("version: '3'\nservices: {}"),
             ]
-            result = check_secret_vm("https://test-vm:29343", check_proof_of_cloud=True)
+            result = check_secret_vm(
+                "https://test-vm:29343", check_proof_of_cloud=True,
+                gpu_claims_version=claims_version,
+            )
 
+        gpu_check.assert_called_once_with(gpu_json, claims_version)
         assert result.valid is True
         assert result.attestation_type == "SECRET-VM"
         assert result.checks["tls_cert_fetched"] is True

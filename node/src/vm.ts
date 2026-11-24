@@ -1,6 +1,7 @@
 import { AttestationResult, makeResult, orderChecks } from "./types.js";
 import { checkCpuAttestation as checkCpuAttestationDefault } from "./cpu.js";
 import { checkNvidiaGpuAttestation as checkNvidiaGpuAttestationDefault } from "./nvidia.js";
+import type { NvidiaClaimsVersion } from "./nvidia.js";
 import { checkProofOfCloud as checkProofOfCloud_ } from "./proofOfCloud.js";
 import { verifyWorkload as verifyWorkloadDefault, extractDstackAppId, type DockerFilesInput } from "./workload.js";
 import {
@@ -12,15 +13,10 @@ import {
   normalizeEndpointUrl,
   parseEndpointUrl,
   parseServiceBaseUrl,
+  resolveServiceEndpointWithFallback,
 } from "./url.js";
 
 const SECRET_VM_PORT = 29343;
-// When a bare host (no explicit port) is given, we probe SECRET_VM_PORT first
-// (attest-rest bound directly, standard VMs) and fall back to this port, where
-// a host-net Caddy fronts the app-cert TLS and proxies the evidence endpoints
-// (jedi/rytn topology; attest-rest is loopback-only and unreachable on 29343).
-const SECRET_VM_TLS_FALLBACK_PORT = 21434;
-const PROBE_TIMEOUT_MS = 5000;
 const HTTPS_PORT = 443;
 
 // ---------------------------------------------------------------------------
@@ -46,6 +42,7 @@ export type CheckSecretVmOptions = {
   strict?: boolean;
   tlsUrl?: string;
   enforceGpu?: boolean;
+  gpuClaimsVersion?: NvidiaClaimsVersion;
 };
 
 export type SecretVmRuntime = {
@@ -157,28 +154,9 @@ export function resolveSecretVmEndpoints(
   };
 }
 
-// probeCpu returns true if the endpoint answers GET /cpu within the timeout.
-// A reachable /cpu marks the origin that serves both the quote and the
-// app-cert TLS, so attestation and tls endpoints share that port.
-async function probeCpu(
-  endpoint: SecretVmEndpoint,
-  fetchImpl: typeof fetch,
-): Promise<boolean> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
-  try {
-    const resp = await fetchImpl(`${endpoint.baseUrl}/cpu`, { signal: controller.signal });
-    return resp.ok;
-  } catch {
-    return false;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 // resolveSecretVmEndpointsWithFallback mirrors resolveSecretVmEndpoints but,
 // when the URL carries no explicit port and no separate tls URL was given,
-// probes SECRET_VM_PORT (29343) then SECRET_VM_TLS_FALLBACK_PORT (21434) and
+// probes 29343 then 21434 using the shared evidence endpoint resolver and
 // binds both endpoints to whichever answers /cpu. An explicit port or an
 // explicit tls URL disables probing and preserves the exact prior behavior.
 async function resolveSecretVmEndpointsWithFallback(
@@ -189,18 +167,9 @@ async function resolveSecretVmEndpointsWithFallback(
   if (tlsUrl !== undefined || hasExplicitPort(attestationUrl)) {
     return resolveSecretVmEndpoints(attestationUrl, tlsUrl);
   }
-  const candidatePorts = [SECRET_VM_PORT, SECRET_VM_TLS_FALLBACK_PORT];
-  let first: SecretVmEndpoint | undefined;
-  for (const port of candidatePorts) {
-    const endpoint = makeAttestationEndpoint(attestationUrl, port);
-    if (first === undefined) first = endpoint;
-    if (await probeCpu(endpoint, fetchImpl)) {
-      return { attestation: endpoint, tls: endpoint };
-    }
-  }
-  // None reachable: fall back to the primary port so downstream fetch surfaces
-  // a clear error against 29343.
-  return { attestation: first!, tls: first! };
+  const resolved = await resolveServiceEndpointWithFallback(attestationUrl, fetchImpl);
+  const endpoint = makeAttestationEndpoint(endpointBaseUrl(resolved));
+  return { attestation: endpoint, tls: endpoint };
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +335,7 @@ export async function checkSecretVmWithRuntime(
   }
 
   if (gpuPresent) {
-    const gpuResult = await runtime.checkNvidiaGpuAttestation(gpuData);
+    const gpuResult = await runtime.checkNvidiaGpuAttestation(gpuData, options.gpuClaimsVersion);
     checks.gpu_quote_verified = gpuResult.valid;
     report.gpu = gpuResult.report;
     if (!gpuResult.valid) {
